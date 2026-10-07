@@ -1,0 +1,13 @@
+# Copy this file to cordis.local.yml, replace both placeholder paths, and use
+# that local file with: pnpm dsh web --patch <path-to-cordis.local.yml>
+#
+# Do not commit cordis.local.yml: it is intentionally ignored because it
+# contains machine-specific absolute paths.
+- insert:
+    - id: context-governor
+      name: '<absolute-path-to-context-governor>/src/index.ts'
+      config:
+        enabled: true
+        residentTokenBudget: 6000
+        switchThresholdRatio: 0.80
+        workspaceDirectory: '<absolute-path-for-session-data>/.context-governor'

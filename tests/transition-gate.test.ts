@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { TRANSITION_REQUIRED_MESSAGE, transitionAllowsTool } from '../src/epoch/transition-gate.ts'
+
+test('transition gate enters strict closing mode after pressure crosses the safety line', () => {
+  assert.equal(transitionAllowsTool('canvas_list_courses', false), true)
+  assert.equal(transitionAllowsTool('canvas_list_courses', true), false)
+  assert.equal(transitionAllowsTool('mcp__canvas__canvas_list_courses', true), false)
+  assert.equal(transitionAllowsTool('mcp__filesystem__write_file', true), true)
+  assert.equal(transitionAllowsTool('mcp__filesystem__edit_file', true), true)
+  assert.equal(transitionAllowsTool('mcp__filesystem__create_directory', true), true)
+  assert.equal(transitionAllowsTool('mcp__filesystem__read_text_file', true), false)
+  assert.equal(transitionAllowsTool('mcp__filesystem__read_multiple_files', true), false)
+  assert.equal(transitionAllowsTool('mcp__filesystem__write_file', true, true), false)
+  assert.equal(transitionAllowsTool('switch_context', true, true), true)
+  assert.equal(transitionAllowsTool('mcp__filesystem__search_files', true), false)
+  assert.equal(transitionAllowsTool('mcp__terminal__run', true), false)
+  assert.equal(transitionAllowsTool('list_recent_tool_results', true), true)
+  assert.equal(transitionAllowsTool('read_sub_state', true), false)
+  assert.equal(transitionAllowsTool('read_artifact', true), false)
+  assert.equal(transitionAllowsTool('register_artifact', true), true)
+  assert.equal(transitionAllowsTool('revise_task_plan', true), false)
+  assert.equal(transitionAllowsTool('record_discovered_constraint', true), false)
+  assert.equal(transitionAllowsTool('record_user_constraint', true), false)
+  assert.equal(transitionAllowsTool('read_prior_epoch_event', true), false)
+  assert.equal(transitionAllowsTool('read_prior_epoch_range', true), false)
+  assert.equal(transitionAllowsTool('advance_task_progress', true), true)
+  assert.equal(transitionAllowsTool('record_epoch_continuation', true), true)
+  assert.equal(transitionAllowsTool('replace_pending_sub_step_plan', true), false)
+  assert.equal(transitionAllowsTool('switch_context', true), true)
+  assert.match(TRANSITION_REQUIRED_MESSAGE, /switch_context/)
+  assert.match(TRANSITION_REQUIRED_MESSAGE, /returned tool result is not completed work/)
+  assert.match(TRANSITION_REQUIRED_MESSAGE, /current SubStep still active/)
+  assert.match(TRANSITION_REQUIRED_MESSAGE, /workspace file read/)
+})

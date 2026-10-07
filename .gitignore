@@ -1,0 +1,18 @@
+# Local DSH overlay: it contains machine-specific absolute paths.
+cordis.yml
+*.local.yml
+
+# Secrets and local runtime state.
+.env
+.env.*
+.context-governor/
+
+# Package-manager and test output.
+node_modules/
+.pnpm-store/
+coverage/
+*.log
+
+# Operating-system metadata.
+.DS_Store
+Thumbs.db
