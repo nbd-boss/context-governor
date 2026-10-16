@@ -22,7 +22,7 @@
 - **History**：仍由 DSH 保存的原始会话事件。Governor 只提供当前 Session 的按需读取工具。
 - **Audit**：旁路的只读审计记录，不参与任务状态判断。
 
-详细持久化结构见 [`docs/持久化结构.md`](docs/持久化结构.md)，Step 与 SubStep 的统一规划原则见 [`docs/Planning.md`](docs/Planning.md)。
+详细持久化结构见 [`docs/持久化结构.md`](docs/持久化结构.md)，Step 与 SubStep 的统一规划原则见 [`docs/Planning.md`](docs/Planning.md)，整体正确性验证策略见 [`docs/验证计划.md`](docs/验证计划.md)。
 
 ## Epoch 与持久化
 

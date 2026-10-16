@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { CONTINUATION_RECOVERY_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY } from '../src/agent-guidance.ts'
+import { CONTINUATION_RECOVERY_GUIDANCE, EVIDENCE_BOUNDARY_GUIDANCE, EXACT_DATA_TRANSFER_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY } from '../src/agent-guidance.ts'
 import { buildResidentContext } from '../src/epoch/resident-context.ts'
 import { SessionWorkspaceProvider } from '../src/workspace/session-workspace.ts'
 import { plannedSubState, plannedTaskPlan } from './test-fixtures.ts'
@@ -28,7 +28,10 @@ test('builds a serializable resident payload without DSH message or token depend
     assert.match(resident?.text ?? '', /Locate the retry boundary/)
     const governor = resident?.payload.context_governor as Record<string, unknown>
     assert.deepEqual(governor.retrieval_policy, PRIOR_WORK_RETRIEVAL_POLICY)
+    assert.equal(governor.exact_data_transfer_policy, EXACT_DATA_TRANSFER_GUIDANCE)
+    assert.equal(governor.evidence_boundary_policy, EVIDENCE_BOUNDARY_GUIDANCE)
     assert.match(resident?.text ?? '', /call read_artifact/)
+    assert.match(resident?.text ?? '', /model transcription is a last resort/)
     assert.doesNotMatch(resident?.text ?? '', new RegExp(CONTINUATION_RECOVERY_GUIDANCE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     assert.equal('estimatedTokens' in (resident ?? {}), false)
   } finally {
@@ -63,7 +66,7 @@ test('injects Continuation recovery guidance only for an active unfinished SubSt
     const governor = resident?.payload.context_governor as Record<string, unknown>
     assert.match(String(governor.instruction), /resume_from as the next work objective/)
     assert.match(resident?.text ?? '', /Filter excluded records and write the candidate list/)
-    assert.deepEqual(Object.keys(governor), ['instruction', 'session_id', 'state', 'global_step_navigation', 'current_sub_state', 'retrieval_policy'])
+    assert.deepEqual(Object.keys(governor), ['instruction', 'session_id', 'state', 'global_step_navigation', 'current_sub_state', 'retrieval_policy', 'exact_data_transfer_policy', 'evidence_boundary_policy'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

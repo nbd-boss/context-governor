@@ -1,5 +1,5 @@
 import { ContextQuery } from './context-query.ts'
-import { CONTINUATION_RECOVERY_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY } from '../agent-guidance.ts'
+import { CONTINUATION_RECOVERY_GUIDANCE, EVIDENCE_BOUNDARY_GUIDANCE, EXACT_DATA_TRANSFER_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY } from '../agent-guidance.ts'
 import type { SessionWorkspace } from '../workspace/session-workspace.ts'
 
 export interface ResidentContext {
@@ -26,6 +26,8 @@ export async function buildResidentContext(
       global_step_navigation: query.globalNavigation(),
       current_sub_state: currentSubState,
       retrieval_policy: PRIOR_WORK_RETRIEVAL_POLICY,
+      exact_data_transfer_policy: EXACT_DATA_TRANSFER_GUIDANCE,
+      evidence_boundary_policy: EVIDENCE_BOUNDARY_GUIDANCE,
     },
   }
   const text = JSON.stringify(payload, null, 2)

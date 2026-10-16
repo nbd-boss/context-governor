@@ -1,3 +1,16 @@
+/** One evidence boundary shared by planning, Artifact selection, and task progress. */
+export const EVIDENCE_BOUNDARY_GUIDANCE = [
+  'Before using an inference to narrow task scope, exclude candidates, or decide downstream calculations or external changes, identify direct evidence from the user request, an explicit specification, or current tool results.',
+  'Do not treat correlation, timing, ordering, naming similarity, or equal identifier values from different systems as an authoritative rule. A cross-system identity mapping requires direct evidence and no conflicting identity attributes.',
+  'When evidence is insufficient, do not persist the inference as a trusted result, mark related work complete, or act on it; in particular, do not update, overwrite, or delete an existing record based on an unproven identity mapping. Obtain authoritative evidence or keep the work unresolved.',
+].join(' ')
+
+/** One execution policy for moving exact source data without using the model as a data copier. */
+export const EXACT_DATA_TRANSFER_GUIDANCE = [
+  'When later calculation, filtering, or external writing depends on exact source data, prefer a program, file read, database query, export, or API path that directly reads, transforms, and writes the data; use the model only to choose scope, fields, and transformation rules.',
+  'If no programmatic access path exists and work must continue, model transcription is a last resort: treat its output as reconstructed data rather than a direct copy, retain its source range, and perform available coverage, boundary, and consistency checks before reusing it.',
+].join(' ')
+
 /** One source for the result-first method shared by both planning levels. */
 export const PLANNING_CORE_GUIDANCE = [
   'Before planning children, normalize every parent completion criterion into one observable condition at this planning level. Split a criterion that combines distinct outputs, files, or conditions that different children would establish.',
@@ -7,6 +20,15 @@ export const PLANNING_CORE_GUIDANCE = [
   'List a criterion in a child covers only when that child\'s completed result independently proves the criterion. covers never means partial contribution; if multiple children must jointly establish a criterion, split that parent criterion first.',
   'A planning level may claim only results established at that level: a write stage must not claim validation delegated to a later stage.',
   'Use covers to ensure every parent criterion is covered and remove unrelated or duplicate work.',
+  EVIDENCE_BOUNDARY_GUIDANCE,
+].join(' ')
+
+/** One task-level rule for closing required actions against authoritative persistent state. */
+export const WORKFLOW_STATE_CLOSURE_GUIDANCE = [
+  'When a Mission requires external actions and affects a persistent business system, derive a final completion criterion requiring authoritative persistent state to reflect every required action outcome and any directly specified preservation condition.',
+  'For each external action, inspect the target system schema, documentation, tool results, and existing records for fields directly evidenced to represent that action\'s status or time. When such fields exist, name their required final values in the completion criterion and verify them by read-back after the action.',
+  'Use a concrete state field or invariant only when the user request, explicit specification, target schema, system documentation, tool result, or existing record directly establishes its meaning; do not invent state semantics.',
+  'Before considering a Step that causes an external action complete, determine whether an authoritative persistent system records that action\'s outcome. When direct evidence establishes such a record, plan the post-action update or reconciliation and its read-back as part of the same Step; a successful action call, output artifact, or observation in another system is not sufficient while the authoritative record remains inconsistent.',
 ].join(' ')
 
 /** One source for translating the user task into its sole persisted task-level acceptance criteria. */
@@ -15,12 +37,14 @@ export const TASK_COMPLETION_CRITERIA_GUIDANCE = [
   'Each criterion must state a user-observable final condition, not an implementation action or a claim that an internal step occurred.',
   'Capture every independent required deliverable, required coverage, decision rule that affects the result, and required output condition such as format, ordering, or compatibility.',
   'Preserve the Mission\'s required scope and force: do not weaken all, every, each, only, must, complete, or exact requirements into related, target, needed, or partial work.',
+  WORKFLOW_STATE_CLOSURE_GUIDANCE,
 ].join(' ')
 
 /** One source for model-visible top-level Step planning rules. */
 export const STEP_PLANNING_GUIDANCE = [
   'Plan the whole Mission as ordered major stages or milestones. A Step may span multiple Context Epochs and may contain several related reusable results, but completing it must materially advance the overall task stage.',
   'Steps implement the fixed task completion criteria; they must not reinterpret or narrow required deliverables, coverage, or decision rules.',
+  'When an execution Step depends on an unresolved external schema, state semantics, policy, configuration, or current system state, make bounded reconnaissance its first SubStep. Keep later SubSteps provisional until that evidence is obtained, then replace the entire pending plan before completing reconnaissance.',
   'Do not create a Step for one tool call, one file read, one search, one implementation detail, or an arbitrary fixed item batch.',
   'For each Step, inputs and result are planning-only explanations; Governor persists only step, status, and covers.',
 ].join(' ')
@@ -28,6 +52,8 @@ export const STEP_PLANNING_GUIDANCE = [
 /** One source for model-visible SubStep-specific planning rules. */
 export const SUB_STEP_PLANNING_GUIDANCE = [
   'For the current Step, derive observable step_completion_criteria from the authoritative user request, Step, constraints, and referenced specifications.',
+  'When the active current SubStep is reconnaissance, inspect only the evidence needed to resolve the external contract. Before completing it, use replace_pending_sub_step_plan to replace every provisional pending item with an evidence-based execution plan; reconnaissance itself must not claim that an external action or write is complete.',
+  'Use directly confirmed reconnaissance facts to name the exact state transitions and read-back conditions required by later execution SubSteps, including action-status or action-time fields when their meaning is established.',
   'Each submitted item is one candidate SubStep with one independently verifiable and reusable result that can normally be advanced within one Context Epoch.',
   'inputs and result are planning-only explanations; Governor persists only action, completion_criteria, and covers.',
   'Never create a SubStep for one tool call, one file read, one search, or unverified partial work.',
@@ -39,6 +65,7 @@ export const ARTIFACT_SELECTION_GUIDANCE = [
   'Its coverage and available fields must be sufficient for that later action.',
   'After registration, never modify or delete that Resource file; write any revised result to a new absolute path and register a new Artifact.',
   'Do not register a compact conclusion that belongs in the completed SubStep summary, a current-Epoch one-use temporary file, an unverified or incomplete file, an execution log or work note, or a final deliverable that no later work will use as input.',
+  EVIDENCE_BOUNDARY_GUIDANCE,
 ].join(' ')
 
 /** One source for recovering results that earlier Context Epochs already obtained. */
