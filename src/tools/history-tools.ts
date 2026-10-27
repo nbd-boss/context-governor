@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '../../../deepseek-harness/packages/core/tools/src/index.ts'
+import type { JsonValue } from '../../../deepseek-harness/packages/util/values/src/index.ts'
 
 import {
   type HistoryIndex,
@@ -22,7 +23,7 @@ interface SessionEventLike {
 interface ToolCallProvenance {
   call_event_id: string
   tool_name: string
-  arguments: Record<string, unknown>
+  arguments: Record<string, JsonValue>
   is_error: boolean
 }
 
@@ -65,21 +66,21 @@ function truncate(text: string): string {
   return text.length <= MAX_ARGUMENT_TEXT_LENGTH ? text : `${text.slice(0, MAX_ARGUMENT_TEXT_LENGTH)}…`
 }
 
-function safeArgumentValue(value: unknown, depth: number): unknown {
+function safeArgumentValue(value: unknown, depth: number): JsonValue {
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
   if (typeof value === 'string') return truncate(value)
   if (depth >= MAX_ARGUMENT_DEPTH) return '[truncated]'
   if (Array.isArray(value)) return value.slice(0, MAX_ARGUMENT_ENTRIES).map(item => safeArgumentValue(item, depth + 1))
   const record = asRecord(value)
   if (record === undefined) return String(value)
-  const output: Record<string, unknown> = {}
+  const output: Record<string, JsonValue> = {}
   for (const [key, item] of Object.entries(record).slice(0, MAX_ARGUMENT_ENTRIES)) {
     if (!SENSITIVE_ARGUMENT_KEY.test(key)) output[key] = safeArgumentValue(item, depth + 1)
   }
   return output
 }
 
-function safeArguments(raw: unknown): Record<string, unknown> {
+function safeArguments(raw: unknown): Record<string, JsonValue> {
   let parsed = raw
   if (typeof raw === 'string') {
     try {
@@ -89,23 +90,21 @@ function safeArguments(raw: unknown): Record<string, unknown> {
     }
   }
   const sanitized = safeArgumentValue(parsed, 0)
-  return asRecord(sanitized) ?? { value: sanitized }
+  return sanitized !== null && typeof sanitized === 'object' && !Array.isArray(sanitized)
+    ? sanitized : { value: sanitized }
 }
 
 function toolResultCallId(event: SessionEventLike): string | undefined {
   const data = asRecord(event.data)
   const message = asRecord(data?.message)
-  const source = asRecord(message?.source)
-  const value = source?.callId ?? data?.callId
+  const value = message?.toolCallId
   return typeof value === 'string' ? value : undefined
 }
 
 function toolResultIsError(event: SessionEventLike): boolean {
   const data = asRecord(event.data)
-  if (data?.isError === true) return true
   const message = asRecord(data?.message)
-  const content = message?.content
-  return Array.isArray(content) && content.some(block => asRecord(block)?.isError === true)
+  return message?.isError === true
 }
 
 /**
@@ -188,7 +187,7 @@ export function visibleRecentToolResultNavigation(
   )
 }
 
-/** Register the phase-two read-only History tools. */
+/** Expose bounded read-only navigation over DSH events; the Agent chooses what to retrieve. */
 export function registerHistoryTools(ctx: Context, index: HistoryIndex, workspaces: SessionWorkspaceProvider): void {
   ctx.tools.register(defineTool({
     name: 'list_recent_tool_results',
@@ -233,27 +232,8 @@ export function registerHistoryTools(ctx: Context, index: HistoryIndex, workspac
   }))
 
   ctx.tools.register(defineTool({
-    name: 'read_prior_epoch_event',
-    description: 'Read one complete raw DSH History event from this Session that is no longer visible in the current Context Epoch. First use read_sub_state to locate an older SubStep source event. Current-Epoch events are already in the model Context and are rejected rather than duplicated.',
-    parameters: {
-      id: { type: 'string', required: true, description: 'A no-longer-visible event-N identifier from a SubStep source_events reference.' },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
-    async execute(args, exec) {
-      const session = sessionFromExecution(exec)
-      const event = eventFromId(session.snapshotEvents(), args.id)
-      requirePriorEpochEvent(args.id, visibleEventSequences(session))
-      await workspaces.forSession(session.id).audits.recordRead(session.id, { kind: 'event', target: args.id })
-      return JSON.stringify(event)
-    },
-  }))
-
-  ctx.tools.register(defineTool({
     name: 'read_prior_epoch_range',
-    description: 'Read a bounded inclusive range of raw DSH History events from this Session that are no longer visible in the current Context Epoch. Use this only after a SubState points to an older span whose detail is needed. Any range containing a current-Epoch event is rejected rather than duplicated.',
+    description: 'Read stored DSH History events from this Session that are no longer visible in the current Context Epoch. Use read_sub_state to locate older criterion_evidence first. Supply identical start_id and end_id to read one event, or an inclusive range for several events. Any range containing a current-Epoch event is rejected rather than duplicated. This returns the stored event representation, not externalized result files; follow context_governor.retrieval_policy.raw_history for full-result access.',
     parameters: {
       start_id: { type: 'string', required: true, description: 'First event-N identifier to include.' },
       end_id: { type: 'string', required: true, description: 'Last event-N identifier to include.' },
@@ -274,7 +254,9 @@ export function registerHistoryTools(ctx: Context, index: HistoryIndex, workspac
         if (event.seq >= start && event.seq <= end) requirePriorEpochEvent(`event-${String(event.seq)}`, visibleSequences)
       }
       const limit = Math.max(1, Math.min(Math.trunc(args.limit ?? 20), 100))
-      await workspaces.forSession(session.id).audits.recordRead(session.id, { kind: 'event_range', target: `${args.start_id}..${args.end_id}` })
+      await workspaces.forSession(session.id).audits.recordRead(session.id, start === end
+        ? { kind: 'event', target: args.start_id }
+        : { kind: 'event_range', target: `${args.start_id}..${args.end_id}` })
       return JSON.stringify(events.filter(event => event.seq >= start && event.seq <= end).slice(0, limit))
     },
   }))

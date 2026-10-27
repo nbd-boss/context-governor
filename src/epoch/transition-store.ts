@@ -46,7 +46,7 @@ function validateRelativePath(path: string): string {
     throw new Error(`Invalid transaction relative path: ${String(path)}`)
   }
   const normalized = normalize(path).replaceAll('\\', '/')
-  if (!/^(?:state\.json|sub_states\/sub-state-\d+\.json|artifacts\/artifact-\d+\.json)$/.test(normalized)) {
+  if (!/^(?:state\.json|sub_states\/step-\d+\.json|artifacts\/artifact-\d+\.json)$/.test(normalized)) {
     throw new Error(`Unsupported transaction path: ${path}`)
   }
   return normalized
@@ -63,7 +63,7 @@ function validateManifest(value: unknown): TransitionManifest {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid transition manifest file ${String(index)}`)
     const file = value as Record<string, unknown>
     if ((file.kind !== 'artifact' && file.kind !== 'sub_state' && file.kind !== 'state')
-      || typeof file.target_sha256 !== 'string' || typeof file.staged_path !== 'string'
+      || typeof file.relative_path !== 'string' || typeof file.target_sha256 !== 'string' || typeof file.staged_path !== 'string'
       || (file.base_sha256 !== null && typeof file.base_sha256 !== 'string')) {
       throw new Error(`Invalid transition manifest file ${String(index)}`)
     }

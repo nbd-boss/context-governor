@@ -1,13 +1,13 @@
-import { nextSubStateId, parseStepId, type CriterionId, type SubStepId } from '../ids.ts'
+import { nextCriterionId, parseCriterionId, parseStepId, subStepIdAt, type CriterionId, type SubStepId } from '../ids.ts'
 import { validateContextState } from '../state/state-contract.ts'
-import { createPlannedSubState, createReplacementPendingSubSteps, type PendingSubStepDraft, type SubStepPlanDraft } from '../planning/sub-step-plan.ts'
-import { validateSubState, validateSubStepContinuation, type ArtifactRef, type SubState, type SubStepContinuation } from '../state/sub-state-contract.ts'
+import { createPlannedSubState, applySubStepChange, type SubStepChange, type SubStepPlanDraft, type SubStepPlanDraftItem } from '../planning/sub-step-plan.ts'
+import { validateSubState, validateSubStepContinuation, type ArtifactRef, type CriterionEvidence, type SubState, type SubStepContinuation } from '../state/sub-state-contract.ts'
 import type { Artifact } from '../evidence/artifact-contract.ts'
 import { validateWorkspaceSnapshot, type WorkspaceSnapshot } from '../workspace/workspace-validator.ts'
 
 export interface CompletedCurrentSubStepInput {
   summary: string
-  source_events: string[]
+  criterion_evidence: CriterionEvidence[]
   artifact_refs: ArtifactRef[]
 }
 
@@ -21,19 +21,37 @@ interface CurrentIdentity {
 export interface AdvanceSubStepInput extends CurrentIdentity {}
 
 export interface AdvanceStepInput extends CurrentIdentity {
-  next_step: { step_id: string; plan: SubStepPlanDraft } | null
+  next_step: { step_id: string } | null
 }
 
-export interface ReplacePendingSubStepPlanInput {
+export interface PlanCurrentStepInput {
+  step_id: string
+  plan: SubStepPlanDraft
+}
+
+export interface ReviseSubStepInput {
   step_id: string
   expected_current_sub_step_id: string
-  pending_sub_steps: PendingSubStepDraft[]
+  change: SubStepChange
+}
+
+export interface ReplanStepCriteriaInput {
+  step_id: string
+  expected_current_sub_step_id: string
+  supersede: string[]
+  add: string[]
+  changes: Array<
+    | { operation: 'delete'; sub_step_id: string }
+    | ({ operation: 'add' } & SubStepPlanDraftItem)
+    | ({ operation: 'update'; sub_step_id: string } & SubStepPlanDraftItem)
+  >
 }
 
 export type RecordContinuationInput = SubStepContinuation
 
 function usedSubStepIds(snapshot: WorkspaceSnapshot): SubStepId[] {
   return snapshot.sub_states.flatMap(subState => [
+    subStepIdAt(subState.next_sub_step_number - 1),
     ...subState.completed_sub_steps.map(item => item.sub_step_id),
     ...(subState.current_sub_step === null ? [] : [subState.current_sub_step.sub_step_id]),
     ...subState.pending_sub_steps.map(item => item.sub_step_id),
@@ -63,10 +81,9 @@ function completeCurrent(subState: SubState, completed: CompletedCurrentSubStepI
   return {
     sub_step_id: current.sub_step_id,
     action: current.action,
-    completion_criteria: current.completion_criteria,
     covers: current.covers,
     summary: completed.summary,
-    source_events: completed.source_events,
+    criterion_evidence: completed.criterion_evidence,
     artifact_refs: completed.artifact_refs,
   }
 }
@@ -74,13 +91,12 @@ function completeCurrent(subState: SubState, completed: CompletedCurrentSubStepI
 function replaceSubState(snapshot: WorkspaceSnapshot, next: SubState): WorkspaceSnapshot {
   return {
     ...snapshot,
-    sub_states: snapshot.sub_states.map(subState => subState.sub_state_id === next.sub_state_id ? next : subState),
+    sub_states: snapshot.sub_states.map(subState => subState.step_id === next.step_id ? next : subState),
   }
 }
 
 function plannedSubState(snapshot: WorkspaceSnapshot, stepId: string, plan: SubStepPlanDraft): SubState {
   return createPlannedSubState({
-    sub_state_id: nextSubStateId(snapshot.sub_states.map(item => item.sub_state_id)),
     step_id: stepId,
     plan,
     used_criterion_ids: usedCriterionIds(snapshot),
@@ -109,7 +125,7 @@ export function advanceSubStep(snapshot: WorkspaceSnapshot, input: AdvanceSubSte
   const current = validateWorkspaceSnapshot(snapshot)
   const subState = activeSubState(current, input.step_id, input.expected_sub_step_id)
   const [next, ...remaining] = subState.pending_sub_steps
-  if (next === undefined) throw new Error('advance_sub_step requires at least one pending SubStep; use advance_step at the Step boundary')
+  if (next === undefined) throw new Error('advance_sub_step requires at least one pending SubStep. Before choosing advance_step or complete_task at this boundary, apply context_governor.decision_checks.before_completion; if the promised result remains unmet, keep the Step active, preserve partial progress, and report the blocker.')
   const completed = completeCurrent(subState, input.completed)
   const projected = validateSubState({
     ...subState,
@@ -137,7 +153,7 @@ export function advanceStep(snapshot: WorkspaceSnapshot, input: AdvanceStepInput
   })
   const doneSteps = currentState.task_plan.steps.map(step => step.step_id === active.step_id ? { ...step, status: 'done' as const } : step)
   const artifacts = [...current.artifacts, ...(input.introduced_artifacts ?? [])]
-  const subStates = current.sub_states.map(subState => subState.sub_state_id === completedState.sub_state_id ? completedState : subState)
+  const subStates = current.sub_states.map(subState => subState.step_id === completedState.step_id ? completedState : subState)
 
   if (input.next_step === null) {
     if (doneSteps.some(step => step.status === 'pending')) throw new Error('next_step is required while pending Steps remain')
@@ -154,35 +170,75 @@ export function advanceStep(snapshot: WorkspaceSnapshot, input: AdvanceStepInput
   if (nextStep?.status !== 'pending') throw new Error('next_step.step_id must identify a pending Step')
   const startedSteps = doneSteps.map(step => step.step_id === nextStepId ? { ...step, status: 'in_progress' as const } : step)
   const startedState = validateContextState({ ...currentState, task_plan: { ...currentState.task_plan, steps: startedSteps } })
-  const baseForAllocation: WorkspaceSnapshot = { state: startedState, sub_states: subStates, artifacts }
-  const nextSubState = plannedSubState(baseForAllocation, nextStepId, input.next_step.plan)
   return validateWorkspaceSnapshot({
     state: startedState,
     artifacts,
-    sub_states: [...subStates, nextSubState],
+    sub_states: subStates,
   })
 }
 
-export function replacePendingSubStepPlan(snapshot: WorkspaceSnapshot, input: ReplacePendingSubStepPlanInput): WorkspaceSnapshot {
+export function planCurrentStep(snapshot: WorkspaceSnapshot, input: PlanCurrentStepInput): WorkspaceSnapshot {
+  const current = validateWorkspaceSnapshot(snapshot)
+  const stepId = parseStepId(input.step_id, 'step_id')
+  const active = current.state.task_plan.steps.find(step => step.status === 'in_progress')
+  if (active?.step_id !== stepId) throw new Error('step_id must identify the active Step')
+  if (current.sub_states.some(subState => subState.step_id === stepId)) {
+    throw new Error(`The active Step already has a SubState: ${stepId}`)
+  }
+  return validateWorkspaceSnapshot({
+    ...current,
+    sub_states: [...current.sub_states, plannedSubState(current, stepId, input.plan)],
+  })
+}
+
+export function reviseSubStep(snapshot: WorkspaceSnapshot, input: ReviseSubStepInput): WorkspaceSnapshot {
   const current = validateWorkspaceSnapshot(snapshot)
   const subState = activeSubState(current, input.step_id, input.expected_current_sub_step_id)
-  const pending = createReplacementPendingSubSteps({
-    sub_state: subState,
-    pending_sub_steps: input.pending_sub_steps,
-    used_sub_step_ids: usedSubStepIds(current),
-  })
-  const before = subState.pending_sub_steps.map(item => ({ action: item.action, completion_criteria: item.completion_criteria, covers: item.covers }))
-  const after = pending.map(item => ({ action: item.action, completion_criteria: item.completion_criteria, covers: item.covers }))
-  if (JSON.stringify(before) === JSON.stringify(after)) throw new Error('pending_sub_steps must make a substantive plan change')
-  const projected = validateSubState({ ...subState, pending_sub_steps: pending })
+  const projected = validateSubState(applySubStepChange(subState, input.change, usedSubStepIds(current)))
   return validateWorkspaceSnapshot(replaceSubState(current, projected))
 }
-
-export function stampBoundaryRevision(baseState: WorkspaceSnapshot['state'], projected: WorkspaceSnapshot): WorkspaceSnapshot {
-  const base = validateContextState(baseState)
-  const checked = validateWorkspaceSnapshot(projected)
-  return validateWorkspaceSnapshot({
-    ...checked,
-    state: validateContextState({ ...checked.state, revision: base.revision + 1 }),
+/** Keep historical criterion IDs and completed work intact while replacing only pending work. */
+export function replanStepCriteria(snapshot: WorkspaceSnapshot, input: ReplanStepCriteriaInput): WorkspaceSnapshot {
+  const current = validateWorkspaceSnapshot(snapshot)
+  const subState = activeSubState(current, input.step_id, input.expected_current_sub_step_id)
+  if (!Array.isArray(input.supersede) || !Array.isArray(input.add)) throw new Error('supersede and add must be arrays')
+  const existing = new Set(subState.step_completion_criteria.map(item => item.criterion_id))
+  const supersede = input.supersede.map((value, index) => {
+    const id = parseCriterionId(value, `supersede[${String(index)}]`)
+    if (!existing.has(id) || subState.superseded_criterion_ids.includes(id)) throw new Error(`Only active criteria can be superseded: ${id}`)
+    return id
   })
+  if (new Set(supersede).size !== supersede.length) throw new Error('supersede contains duplicate criterion IDs')
+  if (supersede.length === 0 && input.add.length === 0) throw new Error('Criteria replan must change at least one criterion')
+  const allocated = [...usedCriterionIds(current)]
+  const additions = input.add.map((criterion, index) => {
+    if (typeof criterion !== 'string' || criterion.trim() === '') throw new Error(`add[${String(index)}] must be non-empty text`)
+    const criterion_id = nextCriterionId(allocated)
+    allocated.push(criterion_id)
+    return { criterion_id, criterion: criterion.trim() }
+  })
+  const criteria = [...subState.step_completion_criteria, ...additions]
+  if (new Set(criteria.map(item => item.criterion)).size !== criteria.length) throw new Error('step_completion_criteria contains duplicate text')
+  const retired = [...subState.superseded_criterion_ids, ...supersede]
+  if (!Array.isArray(input.changes)) throw new Error('changes must be an array')
+  const drafts = input.changes.map((item, index): SubStepChange => {
+    if (item.operation === 'delete') return item
+    if (!Array.isArray(item.covers) || item.covers.length === 0) throw new Error(`changes[${String(index)}].covers_criterion_indexes must be non-empty`)
+    return {
+      ...item,
+      covers: item.covers.map(cover => {
+        if (!Number.isSafeInteger(cover) || cover < 0 || cover >= criteria.length) throw new Error(`changes[${String(index)}].covers_criterion_indexes contains invalid index`)
+        const id = criteria[cover]!.criterion_id
+        if (retired.includes(id)) throw new Error(`changes[${String(index)}] cannot cover a superseded criterion`)
+        return id
+      }),
+    } as SubStepChange
+  })
+  const seeded = {
+    ...subState,
+    step_completion_criteria: criteria,
+    superseded_criterion_ids: retired,
+  }
+  const projected = validateSubState(drafts.reduce((base, change) => applySubStepChange(base, change, usedSubStepIds(current)), seeded))
+  return validateWorkspaceSnapshot(replaceSubState(current, projected))
 }

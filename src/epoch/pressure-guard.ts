@@ -1,3 +1,5 @@
+import { CONTEXT_CLOSING_GUIDANCE } from '../agent-guidance.ts'
+
 /** Pure policy for deciding whether the next request needs a Context switch reminder. */
 export interface PressureSnapshot {
   contextWindow: number
@@ -29,10 +31,6 @@ export function renderSwitchReminder(decision: PressureDecision, contextWindow: 
   return [
     '[Context Governor: 进入切换前收尾]',
     `下一次请求预计使用 ${String(decision.projectedTokens)} / ${String(contextWindow)} tokens，已达到 ${String(decision.thresholdTokens)} 的安全线。`,
-    '停止新的外部查询、任务动作，以及 History、Artifact 和工作区文件读取。只能使用受限的本地写入工具，把本 Epoch 已经返回的结果写入任务产物或中间产物。',
-    '已查询不等于已处理，已处理不等于已保存。只有所有必需结果都已整合，才能把对应 SubStep 标记为完成。',
-    '若已完成工作产生了切换后仍需精确使用的结构化数据，先按 register_artifact 的规则登记，再记录该 SubStep。',
-    '完成收尾后，用 advance_task_progress 记录已完成进展，再调用 switch_context；若无法完整收尾，保持当前 SubStep 未完成并直接切换，让下一 Epoch 继续它。',
-    '若任务已经完成，调用 advance_task_progress 的 complete_task。',
+    CONTEXT_CLOSING_GUIDANCE,
   ].join('\n')
 }

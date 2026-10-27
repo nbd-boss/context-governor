@@ -1,5 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
+import type { Session } from '@deepseek-ai/dsh-session'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { createUserMessage } from '../../../deepseek-harness/packages/llm/llm/src/index.ts'
 
 import type { SubStepAuditChange } from '../evidence/audit-contract.ts'
@@ -7,6 +9,13 @@ import { BOOTSTRAP_REQUIRED_MESSAGE } from './bootstrap-gate.ts'
 import type { SessionWorkspaceProvider } from '../workspace/session-workspace.ts'
 import { buildResidentContext } from './resident-context.ts'
 import { assessPressure, renderSwitchReminder } from './pressure-guard.ts'
+import { CONTEXT_CLOSING_GUIDANCE } from '../agent-guidance.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'context-governor': { kind: 'context-governor' } & ContextFormed
+  }
+}
 
 interface PendingSwitch {
   reason: string
@@ -20,14 +29,15 @@ interface PendingSwitch {
  */
 export class EpochController {
   private readonly started = new Set<string>()
+  private readonly epochStartRevision = new Map<string, number>()
   private readonly completed = new Set<string>()
   private readonly pending = new Map<string, PendingSwitch>()
   private readonly transitionRequired = new Set<string>()
+  private readonly closingReminderSent = new Set<string>()
   private ctx?: Context
 
   constructor(
     private readonly workspaces: SessionWorkspaceProvider,
-    private readonly budget: number,
     private readonly switchThresholdRatio: number,
   ) {}
 
@@ -37,18 +47,38 @@ export class EpochController {
       if (status !== 'idle') return
       if (this.completed.has(agent.session.id)) return
       const pending = this.pending.get(agent.session.id)
-      if (pending !== undefined && !pending.continuationQueued) {
-        pending.continuationQueued = true
-        agent.followup(createUserMessage({
-          content: [{ type: 'text', text: 'A new Context Epoch is now active. Continue the task from the Context Governor baseline.' }],
-          source: { kind: 'plugin', plugin: 'context-governor' },
-        }))
+      if (pending !== undefined) {
+        if (!pending.continuationQueued) {
+          pending.continuationQueued = true
+          agent.followup(createUserMessage({
+            content: [{ type: 'text', text: 'A new Context Epoch is now active. Continue the task from the Context Governor baseline.' }],
+            source: { kind: 'context-governor' },
+          }))
+        }
         return
       }
-      if (!this.transitionRequired.has(agent.session.id)) return
-      agent.followup(createUserMessage({
-        content: [{ type: 'text', text: 'Context transition is still required. This Epoch remains in strict closing mode: do not start external work or read History, Artifacts, or workspace files. Only write results already visible in this Context, then register an Artifact or record completed progress when applicable. If unfinished work has a real working file, record_epoch_continuation; otherwise keep the current SubStep active. Then call switch_context. If the task is complete, use advance_task_progress with complete_task.' }],
-        source: { kind: 'plugin', plugin: 'context-governor' },
+    })
+
+    // Correct premature closure inside its owning turn. Throwing at this awaited
+    // boundary preserves a durable turn error, which DSH also reports over ACP.
+    // Idle notifications must never resurrect a failed model request.
+    ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+      const sessionId = agent.session.id
+      if (this.completed.has(sessionId) || this.pending.has(sessionId) || !this.transitionRequired.has(sessionId)) return
+      // DSH keeps max-tokens sticky for a turn, so this hook can also run
+      // after a later tool call. Only a real natural model stop is a closing
+      // claim; truncation recovery and request scheduling belong to DSH.
+      const response = agent.session.snapshotEvents().findLast(event => event.type === 'assistant/message' && event.data.turn === turn)
+      if (response?.type !== 'assistant/message' || response.data.message.content.some(block => block.type === 'tool-call')) return
+      const finish = response.data.stream.findLast(record => record.type === 'chunk' && record.chunk.type === 'finish')
+      if (finish?.type !== 'chunk' || finish.chunk.type !== 'finish' || finish.chunk.reason.kind !== 'stop') return
+      if (this.closingReminderSent.has(sessionId)) {
+        throw new Error('Context Governor handoff incomplete: the closing reminder did not lead to switch_context or task completion. State remains active; resolve the handoff before resuming.')
+      }
+      this.closingReminderSent.add(sessionId)
+      agent.steer(createUserMessage({
+        content: [{ type: 'text', text: CONTEXT_CLOSING_GUIDANCE }],
+        source: { kind: 'context-governor' },
       }))
     })
 
@@ -64,7 +94,34 @@ export class EpochController {
         this.completed.add(sessionId)
         return next()
       }
-      const resident = await buildResidentContext(workspace, sessionId)
+      // Within an Epoch, inspect the actual outgoing Context rather than
+      // rebuilding a future baseline after every durable State mutation.
+      if (state !== undefined && this.started.has(sessionId) && effectiveSwitch === undefined) {
+        const decision = await next()
+        if (decision.kind === 'reject') return decision
+        const pressure = ctx.sessionProjections.stateOf(agent.session, 'contextPressure') as { contextWindow?: number } | null
+        if (pressure?.contextWindow !== undefined) {
+          const meter = ctx.tokenMeter.measure(agent.session)
+          const pendingMessageTokens = decision.messages
+            .reduce((sum, message) => sum + ctx.tokenMeter.estimateMessage(message), 0)
+          const assessment = assessPressure({
+            contextWindow: pressure.contextWindow,
+            currentTokens: meter.totalTokens,
+            pendingMessageTokens,
+          }, this.switchThresholdRatio)
+          if (assessment.shouldRemind && !this.transitionRequired.has(sessionId)) {
+            this.transitionRequired.add(sessionId)
+            const text = renderSwitchReminder(assessment, pressure.contextWindow)
+            console.log(`[context-governor] Context transition required: session=${sessionId} projectedTokens=${String(assessment.projectedTokens)} thresholdTokens=${String(assessment.thresholdTokens)}`)
+            return {
+              ...decision,
+              messages: [this.governorMessage(text, 'context-governor-pressure'), ...decision.messages],
+            }
+          }
+        }
+        return decision
+      }
+      const resident = await buildResidentContext(workspace, sessionId, effectiveSwitch?.reason)
       if (resident === undefined) {
         const decision = await next()
         if (decision.kind === 'reject') return decision
@@ -80,13 +137,11 @@ export class EpochController {
       }
       const residentMessage = this.governorMessage(resident.text, 'context-governor')
       const residentTokens = ctx.tokenMeter.estimateMessage(residentMessage)
-      if (residentTokens > this.budget) {
-        throw new Error(`Resident Context requires ${String(residentTokens)} tokens but residentTokenBudget is ${String(this.budget)}. Required State, navigation, current SubState, and rules were not truncated.`)
-      }
 
       if (effectiveSwitch !== undefined) {
         this.pending.delete(sessionId)
         this.transitionRequired.delete(sessionId)
+        this.closingReminderSent.delete(sessionId)
         const nodes = agent.session.surface.nodes
         const events = agent.session.snapshotEvents()
         // DSH protects its system-prompt surface node. A Context Epoch resets
@@ -109,6 +164,7 @@ export class EpochController {
           agent.session.append('user/message', residentMessage, { surfaceOp: 'append' })
         }
         this.started.add(sessionId)
+        this.epochStartRevision.set(sessionId, state!.revision)
         await this.recordAudit('start recovered Context Epoch', () => workspace.audits.startEpoch({
           sessionId,
           baselineEvent: `event-${String(Math.max(-1, ...events.map(event => event.seq)) + 1)}`,
@@ -120,38 +176,13 @@ export class EpochController {
 
       const decision = await next()
       if (decision.kind === 'reject') return decision
-      if (this.started.has(sessionId)) {
-        const pressure = ctx.sessionProjections.stateOf(agent.session, 'contextPressure') as { contextWindow?: number } | null
-        if (pressure?.contextWindow !== undefined) {
-          const meter = ctx.tokenMeter.measure(agent.session)
-          const pendingMessageTokens = decision.messages
-            .reduce((sum, message) => sum + ctx.tokenMeter.estimateMessage(message), 0)
-          const assessment = assessPressure({
-            contextWindow: pressure.contextWindow,
-            currentTokens: meter.totalTokens,
-            pendingMessageTokens,
-          }, this.switchThresholdRatio)
-          if (assessment.shouldRemind) {
-            this.transitionRequired.add(sessionId)
-            const text = renderSwitchReminder(assessment, pressure.contextWindow)
-            console.log(`[context-governor] Context transition required: session=${sessionId} projectedTokens=${String(assessment.projectedTokens)} thresholdTokens=${String(assessment.thresholdTokens)}`)
-            return {
-              ...decision,
-              messages: [
-                this.governorMessage(text, 'context-governor-pressure'),
-                ...decision.messages,
-              ],
-            }
-          }
-        }
-        return decision
-      }
       this.started.add(sessionId)
+      this.epochStartRevision.set(sessionId, state!.revision)
       const events = agent.session.snapshotEvents()
       await this.recordAudit('start Context Epoch', () => workspace.audits.startEpoch({
         sessionId,
         baselineEvent: `event-${String(Math.max(-1, ...events.map(event => event.seq)) + 1)}`,
-          residentTokens,
+        residentTokens,
       }))
       return {
         ...decision,
@@ -161,7 +192,7 @@ export class EpochController {
   }
 
   async requestSwitch(
-    agent: { session: { id: string; snapshotEvents(): readonly { seq: number }[] }; followup(message: ReturnType<typeof createUserMessage>): void },
+    agent: { session: Session },
     reason: string,
     changes: { stateChanged: boolean; subStepChanges: SubStepAuditChange[] },
   ): Promise<void> {
@@ -178,29 +209,32 @@ export class EpochController {
       sessionId,
       reason,
       endEvent: `event-${String(Math.max(-1, ...events.map(event => event.seq)))}`,
-      stateChanged: changes.stateChanged,
+      stateChanged: changes.stateChanged || state?.revision !== this.epochStartRevision.get(sessionId),
       subStepChanges: changes.subStepChanges,
-      pressure,
+      ...(pressure === undefined ? {} : { pressure }),
     }))
   }
 
   async complete(
-    agent: { session: { id: string; snapshotEvents(): readonly { seq: number }[] } },
+    agent: { session: Session },
     reason: string,
     changes: { stateChanged: boolean; subStepChanges: SubStepAuditChange[] },
   ): Promise<void> {
     const sessionId = agent.session.id
     const events = agent.session.snapshotEvents()
+    const state = await this.workspaces.forSession(sessionId).state.read()
+    const pressure = this.pressure(agent.session)
     await this.recordAudit('complete Context Epoch', () => this.workspaces.forSession(sessionId).audits.completeEpoch({
       sessionId,
       reason,
       endEvent: `event-${String(Math.max(-1, ...events.map(event => event.seq)))}`,
-      stateChanged: changes.stateChanged,
+      stateChanged: changes.stateChanged || state?.revision !== this.epochStartRevision.get(sessionId),
       subStepChanges: changes.subStepChanges,
-      pressure: this.pressure(agent.session),
+      ...(pressure === undefined ? {} : { pressure }),
     }))
     this.pending.delete(sessionId)
     this.transitionRequired.delete(sessionId)
+    this.closingReminderSent.delete(sessionId)
     this.completed.add(sessionId)
   }
 
@@ -209,7 +243,7 @@ export class EpochController {
     return this.transitionRequired.has(sessionId)
   }
 
-  private pressure(session: { id: string }): { currentTokens: number; contextWindow: number; thresholdTokens: number } | undefined {
+  private pressure(session: Session): { currentTokens: number; contextWindow: number; thresholdTokens: number } | undefined {
     const context = this.ctx
     if (context === undefined) return undefined
     const projection = context.sessionProjections.stateOf(session, 'contextPressure') as { contextWindow?: number } | null
@@ -226,7 +260,7 @@ export class EpochController {
   private governorMessage(text: string, sectionName: string) {
     return createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'context-governor', form: 'snapshot', sections: [{ name: sectionName, text }] },
+      source: { kind: 'context-governor', form: 'snapshot', sections: [{ name: sectionName, text }] },
     })
   }
 

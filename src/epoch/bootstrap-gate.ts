@@ -9,8 +9,8 @@ const BOOTSTRAP_ALLOWED_TOOLS = new Set([
 
 export const BOOTSTRAP_REQUIRED_MESSAGE = [
   'Context Governor is enabled, but this Session has no Context State yet.',
-  'Before using Canvas, filesystem, terminal, or any other task tool, call initialize_context_state.',
-  'Use the user request to provide a concise mission, complete task-level acceptance criteria with an ordered result-first task_plan, the first Step complete current_step_plan, and explicit user_constraints.',
+  'Before using any task tool, call initialize_context_state.',
+  'Use the user request to provide the mission, complete task-level acceptance criteria with an ordered result-first task_plan, and explicit user_constraints. The first Step is activated but its SubState is planned later, after any needed reconnaissance.',
   'After it succeeds, retry this same tool call.',
 ].join(' ')
 

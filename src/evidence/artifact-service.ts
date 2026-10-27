@@ -97,7 +97,7 @@ function sameResourcePath(left: string, right: string): boolean {
   return relative(resolve(left), resolve(right)) === ''
 }
 
-/** Verifies structured Resource content before an Artifact may enter an Epoch Delta. */
+/** Verifies structured Resource content before Artifact registration. */
 export class ArtifactService {
   constructor(
     private readonly resourceRoot: string,

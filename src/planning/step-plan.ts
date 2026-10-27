@@ -1,6 +1,7 @@
 import { requireExactKeys, requireText, requireTextList } from '../contract-utils.ts'
-import { nextStepId, parseStepId, type StepId } from '../ids.ts'
+import { nextStepId, parseStepId, stepIdAt, type StepId } from '../ids.ts'
 import { requireCompleteCoverage, validateIndexedCovers, validatePlanningCriteria } from './planning-core.ts'
+import { editPendingItems, readPendingChange, type PendingEdit } from './pending-edit.ts'
 
 export type TaskStatus = 'pending' | 'in_progress' | 'done'
 
@@ -12,7 +13,9 @@ export interface TaskPlanStep {
 }
 
 export interface TaskPlan {
+  next_step_number: number
   completion_criteria: string[]
+  superseded_criteria: number[]
   steps: TaskPlanStep[]
 }
 
@@ -28,9 +31,10 @@ export interface StepPlanDraft {
   steps: StepPlanDraftItem[]
 }
 
-export interface PendingStepPlanDraft extends StepPlanDraftItem {
-  step_id?: string
-}
+export type StepChange =
+  | ({ operation: 'add' } & StepPlanDraftItem)
+  | ({ operation: 'update'; step_id: string } & StepPlanDraftItem)
+  | { operation: 'delete'; step_id: string }
 
 function validateStatus(value: unknown, field: string): TaskStatus {
   if (value !== 'pending' && value !== 'in_progress' && value !== 'done') {
@@ -39,10 +43,10 @@ function validateStatus(value: unknown, field: string): TaskStatus {
   return value
 }
 
-function validateDraftItem(value: unknown, field: string, criterionCount: number, allowStepId = false): StepPlanDraftItem {
+function validateDraftItem(value: unknown, field: string, criterionCount: number): StepPlanDraftItem {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`)
   const item = value as Record<string, unknown>
-  requireExactKeys(item, field, allowStepId ? ['step_id', 'inputs', 'step', 'result', 'covers'] : ['inputs', 'step', 'result', 'covers'])
+  requireExactKeys(item, field, ['inputs', 'step', 'result', 'covers'])
   const inputs = requireTextList(item.inputs, `${field}.inputs`)
   if (inputs.length === 0) throw new Error(`${field}.inputs must be a non-empty array`)
   return {
@@ -57,8 +61,15 @@ function validateDraftItem(value: unknown, field: string, criterionCount: number
 export function validateTaskPlan(value: unknown): TaskPlan {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('task_plan must be an object')
   const record = value as Record<string, unknown>
-  requireExactKeys(record, 'task_plan', ['completion_criteria', 'steps'])
+  requireExactKeys(record, 'task_plan', ['next_step_number', 'completion_criteria', 'superseded_criteria', 'steps'])
   const criteria = validatePlanningCriteria(record.completion_criteria, 'task_plan.completion_criteria')
+  if (!Array.isArray(record.superseded_criteria)) throw new Error('task_plan.superseded_criteria must be an array')
+  const superseded = record.superseded_criteria.map((item, index) => {
+    if (!Number.isSafeInteger(item) || item < 0 || item >= criteria.length) throw new Error(`task_plan.superseded_criteria[${String(index)}] is invalid`)
+    return item as number
+  })
+  if (new Set(superseded).size !== superseded.length) throw new Error('task_plan.superseded_criteria contains duplicates')
+  if (superseded.length === criteria.length) throw new Error('task_plan requires at least one active completion criterion')
   if (!Array.isArray(record.steps) || record.steps.length === 0) throw new Error('task_plan.steps must be a non-empty array')
   const ids = new Set<string>()
   const labels = new Set<string>()
@@ -73,15 +84,25 @@ export function validateTaskPlan(value: unknown): TaskPlan {
     const step = requireText(item.step, `${field}.step`)
     if (labels.has(step)) throw new Error(`task_plan.steps contains duplicate step: ${step}`)
     labels.add(step)
+    const covers = validateIndexedCovers(item.covers, criteria.length, `${field}.covers`)
+    const status = validateStatus(item.status, `${field}.status`)
+    if (status === 'pending' && covers.some(cover => superseded.includes(cover))) throw new Error(`${field}.covers cannot claim a superseded criterion`)
     return {
       step_id: stepId,
       step,
-      status: validateStatus(item.status, `${field}.status`),
-      covers: validateIndexedCovers(item.covers, criteria.length, `${field}.covers`),
+      status,
+      covers,
     }
   })
-  requireCompleteCoverage(criteria, steps.map(step => step.covers), 'task_plan.completion_criteria')
-  return { completion_criteria: criteria, steps }
+  const covered = new Set(steps.flatMap(step => step.covers))
+  for (let index = 0; index < criteria.length; index += 1) {
+    if (!superseded.includes(index) && !covered.has(index)) throw new Error(`task_plan.completion_criteria[${String(index)}] is not covered by any Step`)
+  }
+  const nextNumber = record.next_step_number
+  if (!Number.isSafeInteger(nextNumber) || (nextNumber as number) < Number(nextStepId(steps.map(step => step.step_id)).slice(5))) {
+    throw new Error('task_plan.next_step_number must be a safe integer greater than every allocated Step ID')
+  }
+  return { next_step_number: nextNumber as number, completion_criteria: criteria, superseded_criteria: superseded, steps }
 }
 
 /** Validate an Agent-authored Step plan and allocate its stable identities. */
@@ -102,35 +123,51 @@ export function createPlannedTaskPlan(value: StepPlanDraft): TaskPlan {
     return { step_id: stepId, step: item.step, status: index === 0 ? 'in_progress' : 'pending', covers: item.covers }
   })
   requireCompleteCoverage(criteria, steps.map(step => step.covers), 'task_plan.completion_criteria')
-  return validateTaskPlan({ completion_criteria: criteria, steps })
+  return validateTaskPlan({ next_step_number: steps.length + 1, completion_criteria: criteria, superseded_criteria: [], steps })
 }
 
-/** Replace only Pending Steps while preserving task criteria and protected work. */
-export function revisePendingTaskPlan(taskPlan: TaskPlan, pendingDrafts: PendingStepPlanDraft[]): TaskPlan {
+/** Apply one edit in memory; callers validate the complete transaction target. */
+function applyStepChange(current: TaskPlan, value: StepChange): TaskPlan {
+  const change = readPendingChange(value, 'step_id', ['inputs', 'step', 'result', 'covers'])
+  const id = change.operation === 'add' ? stepIdAt(current.next_step_number) : parseStepId(change.step_id)
+  let edit: PendingEdit<TaskPlanStep>
+  if (change.operation === 'delete') edit = { operation: 'delete', id }
+  else {
+    const draft = validateDraftItem({ inputs: change.inputs, step: change.step, result: change.result, covers: change.covers }, 'change', current.completion_criteria.length)
+    edit = { operation: change.operation, id, value: { step_id: id, step: draft.step, status: 'pending', covers: draft.covers } }
+  }
+  return {
+    ...current,
+    next_step_number: current.next_step_number + (change.operation === 'add' ? 1 : 0),
+    steps: editPendingItems(current.steps, edit, item => item.step_id, item => item.status === 'pending'),
+  }
+}
+
+/** One public plan edit always returns a fully covered, valid plan. */
+export function reviseStep(taskPlan: TaskPlan, change: StepChange): TaskPlan {
+  return validateTaskPlan(applyStepChange(validateTaskPlan(taskPlan), change))
+}
+
+/** Append new criteria without changing the meaning of any historical covers index. */
+export function replanTaskCriteria(taskPlan: TaskPlan, input: {
+  supersede: number[]
+  add: string[]
+  changes: StepChange[]
+}): TaskPlan {
   const current = validateTaskPlan(taskPlan)
-  if (!Array.isArray(pendingDrafts)) throw new Error('pending_steps must be an array')
-  const pendingById = new Map(current.steps.filter(step => step.status === 'pending').map(step => [step.step_id, step]))
-  const protectedSteps = current.steps.filter(step => step.status !== 'pending')
-  const knownIds = new Set(current.steps.map(step => step.step_id))
-  const suppliedIds = new Set<string>()
-  const labels = new Set(protectedSteps.map(step => step.step))
-  const pending = pendingDrafts.map((value, index): TaskPlanStep => {
-    const field = `pending_steps[${String(index)}]`
-    const draft = validateDraftItem(value, field, current.completion_criteria.length, true)
-    if (labels.has(draft.step)) throw new Error(`pending_steps contains duplicate or protected step: ${draft.step}`)
-    labels.add(draft.step)
-    if (value.step_id === undefined) {
-      const stepId = nextStepId([...knownIds])
-      knownIds.add(stepId)
-      return { step_id: stepId, step: draft.step, status: 'pending', covers: draft.covers }
+  if (!Array.isArray(input.supersede) || !Array.isArray(input.add)) throw new Error('supersede and add must be arrays')
+  for (const index of input.supersede) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= current.completion_criteria.length || current.superseded_criteria.includes(index)) {
+      throw new Error(`Only active criterion indexes can be superseded: ${String(index)}`)
     }
-    const stepId = parseStepId(value.step_id, `${field}.step_id`)
-    if (suppliedIds.has(stepId)) throw new Error(`pending_steps contains duplicate step_id: ${stepId}`)
-    suppliedIds.add(stepId)
-    if (!pendingById.has(stepId)) throw new Error(`Only pending Step IDs can be revised: ${stepId}`)
-    return { step_id: stepId, step: draft.step, status: 'pending', covers: draft.covers }
-  })
-  const next = validateTaskPlan({ completion_criteria: current.completion_criteria, steps: [...protectedSteps, ...pending] })
-  if (JSON.stringify(current.steps) === JSON.stringify(next.steps)) throw new Error('pending_steps must make a substantive task-plan change')
-  return next
+  }
+  if (new Set(input.supersede).size !== input.supersede.length) throw new Error('supersede contains duplicate indexes')
+  if (input.supersede.length === 0 && input.add.length === 0) throw new Error('Criteria replan must change at least one criterion')
+  const added = requireTextList(input.add, 'add')
+  const criteria = [...current.completion_criteria, ...added]
+  if (new Set(criteria).size !== criteria.length) throw new Error('Task completion criteria must not contain duplicates')
+  const nextCriteria = [...current.superseded_criteria, ...input.supersede]
+  const seeded = { ...current, completion_criteria: criteria, superseded_criteria: nextCriteria }
+  if (!Array.isArray(input.changes)) throw new Error('changes must be an array')
+  return validateTaskPlan(input.changes.reduce(applyStepChange, seeded))
 }

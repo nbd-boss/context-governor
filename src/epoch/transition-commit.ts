@@ -1,5 +1,3 @@
-import type { Artifact } from '../evidence/artifact-contract.ts'
-import type { SubState } from '../state/sub-state-contract.ts'
 import { TransitionStore, type TransitionFileKind, type TransitionInstallOptions, type TransitionTargetFile } from './transition-store.ts'
 import { validateWorkspaceSnapshot, type WorkspaceSnapshot } from '../workspace/workspace-validator.ts'
 
@@ -7,16 +5,16 @@ function serialize(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
-function byId<T extends { [key: string]: string }>(items: readonly T[], key: keyof T): Map<string, T> {
+function byId<K extends string, T extends Record<K, string>>(items: readonly T[], key: K): Map<string, T> {
   return new Map(items.map(item => [item[key]!, item]))
 }
 
-function changes<T extends { [key: string]: string }>(
+function changes<K extends string, T extends Record<K, string>>(
   kind: TransitionFileKind,
   directory: string,
   base: readonly T[],
   target: readonly T[],
-  key: keyof T,
+  key: K,
 ): TransitionTargetFile[] {
   const prior = byId(base, key)
   const next = byId(target, key)
@@ -59,8 +57,8 @@ export class TransitionCommit {
 
   private async install(base: WorkspaceSnapshot | undefined, target: WorkspaceSnapshot, options: TransitionInstallOptions): Promise<void> {
     const targets: TransitionTargetFile[] = [
-      ...changes<Artifact>('artifact', 'artifacts', base?.artifacts ?? [], target.artifacts, 'artifact_id'),
-      ...changes<SubState>('sub_state', 'sub_states', base?.sub_states ?? [], target.sub_states, 'sub_state_id'),
+      ...changes('artifact', 'artifacts', base?.artifacts ?? [], target.artifacts, 'artifact_id'),
+      ...changes('sub_state', 'sub_states', base?.sub_states ?? [], target.sub_states, 'step_id'),
       stateChange(base?.state, target.state),
     ]
     await this.store.prepare(base?.state.revision ?? null, target.state.revision, targets)

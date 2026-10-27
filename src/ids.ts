@@ -1,17 +1,17 @@
 /** Opaque identifiers persisted by Context Governor. */
 export type StepId = string & { readonly __stepId: unique symbol }
-export type SubStateId = string & { readonly __subStateId: unique symbol }
 export type SubStepId = string & { readonly __subStepId: unique symbol }
 export type CriterionId = string & { readonly __criterionId: unique symbol }
 export type ArtifactId = string & { readonly __artifactId: unique symbol }
+export type ConstraintId = string & { readonly __constraintId: unique symbol }
 
-type SequentialId = StepId | SubStateId | SubStepId | CriterionId | ArtifactId
+type SequentialId = StepId | SubStepId | CriterionId | ArtifactId | ConstraintId
 
 const STEP_ID = /^step-(0*[1-9]\d*)$/
-const SUB_STATE_ID = /^sub-state-(0*[1-9]\d*)$/
 const SUB_STEP_ID = /^sub-step-(0*[1-9]\d*)$/
 const CRITERION_ID = /^criterion-(0*[1-9]\d*)$/
 const ARTIFACT_ID = /^artifact-(0*[1-9]\d*)$/
+const CONSTRAINT_ID = /^constraint-(0*[1-9]\d*)$/
 const EVENT_ID = /^event-(0|[1-9]\d*)$/
 
 function parseSequentialId<T extends SequentialId>(value: unknown, field: string, pattern: RegExp, label: string): T {
@@ -46,11 +46,6 @@ export function parseStepId(value: unknown, field = 'step_id'): StepId {
   return parseSequentialId<StepId>(value, field, STEP_ID, 'step')
 }
 
-/** Parse a persisted per-Step state identity. */
-export function parseSubStateId(value: unknown, field = 'sub_state_id'): SubStateId {
-  return parseSequentialId<SubStateId>(value, field, SUB_STATE_ID, 'sub-state')
-}
-
 /** Parse a persisted action identity. */
 export function validateSubStepId(value: unknown, field = 'sub_step_id'): SubStepId {
   return parseSequentialId<SubStepId>(value, field, SUB_STEP_ID, 'sub-step')
@@ -66,14 +61,28 @@ export function parseArtifactId(value: unknown, field = 'artifact_id'): Artifact
   return parseSequentialId<ArtifactId>(value, field, ARTIFACT_ID, 'artifact')
 }
 
+export function parseConstraintId(value: unknown, field = 'constraint_id'): ConstraintId {
+  const id = parseSequentialId<ConstraintId>(value, field, CONSTRAINT_ID, 'constraint')
+  sequenceOf(id, CONSTRAINT_ID)
+  return id
+}
+
+export function constraintIdAt(sequence: number): ConstraintId {
+  return formatSequentialId<ConstraintId>('constraint', sequence)
+}
+
+/** Allocate the next stable task-plan identity. */
+export function stepIdAt(sequence: number): StepId {
+  return formatSequentialId<StepId>('step', sequence)
+}
+
+export function subStepIdAt(sequence: number): SubStepId {
+  return formatSequentialId<SubStepId>('sub-step', sequence)
+}
+
 /** Allocate the next stable task-plan identity. */
 export function nextStepId(values: readonly StepId[]): StepId {
   return nextSequentialId(values, STEP_ID, 'step')
-}
-
-/** Allocate the next stable per-Step state identity. */
-export function nextSubStateId(values: readonly SubStateId[]): SubStateId {
-  return nextSequentialId(values, SUB_STATE_ID, 'sub-state')
 }
 
 /** Allocate the next stable action identity. */

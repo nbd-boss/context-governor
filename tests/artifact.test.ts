@@ -5,12 +5,10 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { ArtifactService } from '../src/evidence/artifact-service.ts'
-import { ArtifactStore } from '../src/evidence/artifact-store.ts'
-import { EpochDeltaBuffer } from '../src/epoch/epoch-delta-buffer.ts'
-import { stampBoundaryRevision } from '../src/epoch/epoch-projection.ts'
-import { createInitialState } from '../src/state/state-contract.ts'
+import { advanceSubStep } from '../src/epoch/epoch-projection.ts'
 import { SessionWorkspaceProvider } from '../src/workspace/session-workspace.ts'
-import { plannedSubState, plannedTaskPlan } from './test-fixtures.ts'
+import { WorkspaceMutations } from '../src/workspace/workspace-mutations.ts'
+import { initializeWorkspace, plannedSubState, plannedTaskPlan } from './test-fixtures.ts'
 
 test('validates a structured Artifact before its producer SubStep makes it durable', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'context-governor-artifact-'))
@@ -27,37 +25,17 @@ test('validates a structured Artifact before its producer SubStep makes it durab
     }, [])
     assert.equal(artifact.artifact_id, 'artifact-000001')
     assert.equal((await service.read(artifact)).status, 'ready')
+    const reread = await service.read(artifact)
+    assert.equal(reread.status, 'ready')
+    assert.deepEqual(reread.status === 'ready' ? reread.content : undefined, [{ course_code: 'CS101', title: 'Algorithms' }])
 
-    const state = createInitialState({ mission: 'Inspect courses.', task_plan: plannedTaskPlan('List courses.'), user_constraints: [] })
-    const base = { state, sub_states: [plannedSubState({ plan: {
-      step_completion_criteria: ['Course list is known.', 'The next action is selected.'],
-      sub_steps: [
-        { action: 'Read courses.', completion_criteria: ['Course list is known.'], covers: [0] },
-        { action: 'Use the course list.', completion_criteria: ['The next action is selected.'], covers: [1] },
-      ],
-    } })], artifacts: [] }
-    const deltas = new EpochDeltaBuffer()
-    const registered = deltas.recordArtifact({
-      sessionId: 'session-a', durable: base, expectedRevision: 0, reason: 'Course list is reusable.', artifact, source_events: ['event-4'],
-    })
-    assert.equal(registered.projected.artifacts.length, 0)
-    assert.equal(registered.pending_artifacts.length, 1)
-    const completed = deltas.recordSubStep({
-      sessionId: 'session-a', durable: base, expectedRevision: 1, reason: 'Course list captured.',
-      operation: {
-        step_id: 'step-000001', expected_sub_step_id: 'sub-step-000001',
-        completed: { summary: 'CS101 is available.', source_events: ['event-4'], artifact_refs: [{ artifact_id: artifact.artifact_id, relation: 'produced' }] },
-      },
-    })
-    assert.equal(completed.pending_artifacts.length, 0)
-    assert.equal(completed.projected.artifacts[0]?.artifact_id, artifact.artifact_id)
-    assert.equal(completed.projected.sub_states[0]?.completed_sub_steps[0]?.artifact_refs[0]?.relation, 'produced')
+    assert.equal(artifact.contains.available_fields.includes('course_code'), true)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('keeps Artifact metadata immutable and marks a changed Resource stale', async () => {
+test('marks a changed or missing Resource stale without returning trusted content', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'context-governor-artifact-stale-'))
   try {
     const resource = join(directory, 'courses.json')
@@ -67,11 +45,8 @@ test('keeps Artifact metadata immutable and marks a changed Resource stale', asy
       contains: { kind: 'course_list', summary: 'One course.', coverage: 'Fixture.', key_facts: ['CS101 exists.'], available_fields: ['course_code'] },
       resource: { path: resource, format: 'json' },
     }, [])
-    const store = new ArtifactStore(join(directory, 'artifacts'))
-    await store.save(artifact)
-    await assert.rejects(() => store.save(artifact), /immutable/)
     await writeFile(resource, JSON.stringify([{ course_code: 'CS101' }, { course_code: 'MATH201' }]), 'utf8')
-    const result = await service.read((await store.read(artifact.artifact_id))!)
+    const result = await service.read(artifact)
     assert.equal(result.status, 'stale')
     assert.equal('content' in result, false)
     await unlink(resource)
@@ -145,44 +120,41 @@ test('rejects an Artifact whose declared fields are absent from its Resource', a
   }
 })
 
-test('persists an Artifact only with its producer at the Context boundary', async () => {
+test('persists an Artifact only with its producer during immediate SubStep commit', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'context-governor-artifact-boundary-'))
   try {
     const resource = join(directory, 'courses.json')
     await writeFile(resource, JSON.stringify([{ course_code: 'CS101' }]), 'utf8')
-    const workspace = new SessionWorkspaceProvider(directory).forSession('session-a')
-    const state = await workspace.state.initialize({
+    const workspaces = new SessionWorkspaceProvider(directory, () => directory)
+    const workspace = workspaces.forSession('session-a')
+    const state = await initializeWorkspace(workspace, {
       mission: 'Inspect courses.', task_plan: plannedTaskPlan('List courses.'), user_constraints: [],
-    })
-    await workspace.sub_states.save(plannedSubState({ plan: {
+    }, [plannedSubState({ plan: {
       step_completion_criteria: ['Course list is known.', 'The next action is selected.'],
       sub_steps: [
-        { action: 'Read courses.', completion_criteria: ['Course list is known.'], covers: [0] },
-        { action: 'Use the course.', completion_criteria: ['Next action is selected.'], covers: [1] },
+        { action: 'Read courses.', covers: [0] },
+        { action: 'Use the course.', covers: [1] },
       ],
-    } }))
-    const base = { state, sub_states: await workspace.sub_states.readAll(), artifacts: await workspace.artifacts.readAll() }
-    const artifact = await workspace.artifact_service.register({
+    } })])
+    const input = {
       contains: { kind: 'course_list', summary: 'One course.', coverage: 'Fixture.', key_facts: ['CS101 exists.'], available_fields: ['course_code'] },
-      resource: { path: resource, format: 'json' },
-    }, [])
-    const deltas = new EpochDeltaBuffer()
-    deltas.recordArtifact({ sessionId: 'session-a', durable: base, expectedRevision: 0, reason: 'Reusable course rows.', artifact, source_events: ['event-4'] })
-    const recorded = deltas.recordSubStep({
-      sessionId: 'session-a', durable: base, expectedRevision: 1, reason: 'Course list captured.',
-      operation: {
-        step_id: 'step-000001', expected_sub_step_id: 'sub-step-000001',
-        completed: { summary: 'CS101 is available.', source_events: ['event-4'], artifact_refs: [{ artifact_id: artifact.artifact_id, relation: 'produced' }] },
-      },
-    })
+      resource: { path: resource, format: 'json' as const },
+    }
+    const mutations = new WorkspaceMutations(workspaces)
+    const { artifact } = await mutations.registerArtifact('session-a', state.revision, ['event-4'], known => workspace.artifact_service.register(input, known))
     assert.equal(await workspace.artifacts.read(artifact.artifact_id), undefined)
-    const order: string[] = []
-    await workspace.transition.commit(base, stampBoundaryRevision(base.state, recorded.projected), {
-      before_install: file => { order.push(file.kind) },
+    const target = await mutations.apply('session-a', state.revision, (base, pending) => {
+      const criterion_evidence = [{ criterion_id: 'criterion-000001' as const, source_events: ['event-4'] }]
+      const artifact_refs = [{ artifact_id: artifact.artifact_id, relation: 'produced' as const }]
+      return advanceSubStep(base, {
+        step_id: 'step-000001', expected_sub_step_id: 'sub-step-000001',
+        completed: { summary: 'CS101 is available.', criterion_evidence, artifact_refs },
+        introduced_artifacts: mutations.producedArtifacts(pending, artifact_refs, criterion_evidence),
+      })
     })
-    assert.deepEqual(order, ['artifact', 'sub_state', 'state'])
+    assert.equal(target.state.revision, state.revision + 1)
     assert.equal((await workspace.artifacts.read(artifact.artifact_id))?.contains.summary, 'One course.')
-    assert.equal((await workspace.artifacts.readMany([artifact.artifact_id]))[0]?.artifact_id, artifact.artifact_id)
+    assert.deepEqual((await workspace.artifacts.readAll()).map(item => item.artifact_id), [artifact.artifact_id])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

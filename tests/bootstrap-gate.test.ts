@@ -6,7 +6,7 @@ import { BOOTSTRAP_REQUIRED_MESSAGE, bootstrapAllowsTool } from '../src/epoch/bo
 test('bootstrap gate permits only initialization before State exists', () => {
   assert.equal(bootstrapAllowsTool('initialize_context_state', false), true)
   assert.equal(bootstrapAllowsTool('list_recent_tool_results', false), false)
-  assert.equal(bootstrapAllowsTool('read_prior_epoch_event', false), false)
+  assert.equal(bootstrapAllowsTool('read_prior_epoch_range', false), false)
 })
 
 test('bootstrap gate rejects ordinary work before State exists', () => {

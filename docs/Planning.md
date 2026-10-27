@@ -73,7 +73,7 @@ Planning Core 只负责可以由代码可靠判断的内容：
 - 每条父级验收标准至少被一个规划项覆盖；
 - 每个规划项至少覆盖一条父级验收标准。
 
-`step`、`action`、`result` 和 SubStep 自身的 `completion_criteria` 等层级专属字段，分别由 Step Planner 和 SubStep Planner 校验，不进入公共层。
+`step`、`action` 和 `result` 等层级专属字段，分别由 Step Planner 和 SubStep Planner 校验，不进入公共层。SubStep 不另存一份验收标准；它通过 `covers` 引用 Step 标准。
 
 这些检查只能避免结构性缺漏或明显多余项，不能证明业务语义一定正确。
 
@@ -166,6 +166,8 @@ SubStep 表示当前 Step 内一个独立、可验证、可复用的业务成果
 - 不能只是一次工具调用或没有独立结果的操作；
 - 不按任意固定条目数、文件数或调用次数拆分。
 
+调查或准备工作只有产生独立可验证、后续需要复用的结果时才单列 SubStep；否则属于产出目标结果的 SubStep 内部动作。不能为了单列调查而虚构 Step 完成标准。
+
 例如，当前 Step 为“定位重试链路的根因”时，可以规划为：
 
 ```text
@@ -190,34 +192,25 @@ SubStep 规划提交使用：
       "inputs": ["支付重试入口", "扣款调用实现"],
       "action": "追踪 retry() 到 create_charge() 的调用链。",
       "result": "已确认的重试调用边界",
-      "completion_criteria": [
-        "调用入口、重试位置和扣款调用位置均已确认。"
-      ],
-      "covers": [0]
+      "covers_criterion_indexes": [0]
     },
     {
       "inputs": ["扣款调用实现", "idempotency key 生成逻辑"],
       "action": "确认 idempotency key 的准确生成位置。",
       "result": "已确认的 key 生成边界",
-      "completion_criteria": [
-        "能够指出 key 的准确生成位置和每次重试时的行为。"
-      ],
-      "covers": [1]
+      "covers_criterion_indexes": [1]
     },
     {
       "inputs": ["已确认的重试调用边界", "已确认的 key 生成边界"],
       "action": "结合调用链和 key 生成行为确认重复扣款根因。",
       "result": "具有证据的重复扣款根因",
-      "completion_criteria": [
-        "根因结论能够由代码或测试证据支持。"
-      ],
-      "covers": [2]
+      "covers_criterion_indexes": [2]
     }
   ]
 }
 ```
 
-其中 `inputs` 和 `result` 是规划期字段。Governor 校验后将它们丢弃，不复制到 SubState。
+其中 `inputs` 和 `result` 是规划期字段；`action` 应描述可观察的成果。`covers_criterion_indexes` 使用本次 `step_completion_criteria` 的从零开始的下标；Governor 建立 SubState 时才分配稳定的 Criterion ID。后续替换 Pending SubStep 使用 `covers_criterion_ids` 引用 SubState 中已有的 ID。Governor 校验后丢弃 `inputs` 和 `result`，不复制到 SubState。
 
 ## 6. 两种 Planner 的明确区别
 
@@ -239,9 +232,9 @@ SubStep 规划提交使用：
 
 Step 是任务级结构，调整条件应比 SubStep 更严格。只有当用户要求、任务范围或已确认事实使原 Task Plan 不再完整或不再成立时，才调整尚未开始的 Step。
 
-Agent 使用现有 `revise_task_plan` 提交新的完整 Pending Step 计划。Governor 保持任务级完成标准、Done Step 和 Active Step 不变，重新检查所有 Step 合起来是否仍覆盖全部任务标准，为新增 Step 分配新 ID，并将变化记录为 Epoch Delta。
+Agent 使用 `revise_step` 每次提交一个 `add / update / delete` 操作。新增由 Governor 分配 ID 并追加到 Pending 末尾；修改保留原 ID 和位置；删除只移除指定 Pending 项。每次检查任务标准仍完整覆盖，成功后立即持久化并递增 revision。
 
-Step 重规划与 Pending SubStep 重规划使用不同工具和领域契约；两者只共享 Planning Core 的覆盖校验，不共享生命周期操作。
+Step 与 SubStep 使用不同工具和领域契约，共享 `pending-edit.ts` 的单项列表操作及 Planning Core 校验，不共享生命周期推进。复杂调整先确定目标计划和调用顺序，再逐次提交，必要时先新增承接工作再删除旧项。
 
 ### 7.2 Pending SubStep 调整
 
@@ -255,12 +248,14 @@ current_sub_step
 = 当前执行身份，不由 Pending 重规划修改
 
 pending_sub_steps
-= 尚未开始的计划，可以整体替换
+= 尚未开始的计划，可以逐项新增、修改、删除
 ```
 
 执行方法发生变化，但 Current SubStep 的目标与完成标准不变时，不需要重规划。
 
-如果尚未开始的工作需要拆分、合并、删除或调整顺序，Agent 使用 `replace_pending_sub_step_plan` 提交新的完整 Pending 计划。Governor 保持 Step 完成标准、Completed 和 Current 不变，校验覆盖关系，为新 Pending 分配新 ID，并把变化记录为 Epoch Delta。
+Agent 使用 `revise_substep` 每次调整一个 Pending SubStep。已有项保留 ID 和位置，新增项追加并分配新 ID，删除不影响 Completed 和 Current。每次普通调用都校验覆盖并持久化；只变更执行方法而不变更计划内容时，不需要调用。
+
+验收标准发生变化时，使用对应 criteria replan 工具提交标准修订和 `changes` 操作数组。它复用相同的单项修改函数，全部操作在内存完成后校验最终覆盖并一次提交。分配计数随计划持久化，删除和重启都不复用旧 ID。
 
 ## 8. 代码边界建议
 
@@ -269,6 +264,9 @@ pending_sub_steps
 ```text
 planning-core.ts
   公共规划契约与覆盖校验纯函数
+
+pending-edit.ts
+  公共单项新增／修改／删除与 Pending 保护
 
 step-plan.ts
   Step 规划独有契约、粒度指导和 Task Plan 构造

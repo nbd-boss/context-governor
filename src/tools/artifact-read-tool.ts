@@ -1,7 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '../../../deepseek-harness/packages/core/tools/src/index.ts'
+import type { JsonValue } from '../../../deepseek-harness/packages/util/values/src/index.ts'
 
 import type { SessionWorkspaceProvider } from '../workspace/session-workspace.ts'
+import { artifactContainsSchema } from './tool-schemas.ts'
 
 /** Read exact Artifact Resource data only after SubState navigation identifies it as necessary. */
 export function registerArtifactReadTool(ctx: Context, workspaces: SessionWorkspaceProvider): void {
@@ -13,7 +15,7 @@ export function registerArtifactReadTool(ctx: Context, workspaces: SessionWorksp
       schema: { type: 'object', additionalProperties: false, properties: {
         status: { type: 'string', required: true },
         artifact_id: { type: 'string', required: true },
-        contains: { type: 'object', required: true, additionalProperties: true, properties: {} },
+        contains: artifactContainsSchema,
         // DSH requires an explicit unconstrained JSON value schema. Artifact
         // resources may be an object, array, scalar, or parsed CSV rows.
         content: { type: 'json' },
@@ -33,7 +35,8 @@ export function registerArtifactReadTool(ctx: Context, workspaces: SessionWorksp
         status: result.status,
         artifact_id: artifact.artifact_id,
         contains: artifact.contains,
-        ...(result.status === 'ready' ? { content: result.content } : {}),
+        // ArtifactService parses JSON/JSONL or returns CSV text, never arbitrary objects.
+        ...(result.status === 'ready' ? { content: result.content as JsonValue } : {}),
       }
     },
   }))

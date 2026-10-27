@@ -23,9 +23,9 @@ test('validates one planned SubState across completed, current, and pending regi
   const initial = plannedSubState({ plan: {
     step_completion_criteria: ['The retry boundary is known.'],
     sub_steps: [
-      { action: 'Run the timeout retry test.', completion_criteria: ['The duplicate is reproduced.'], covers: [0] },
-      { action: 'Trace key generation.', completion_criteria: ['Find the key creation call.'], covers: [0] },
-      { action: 'Confirm the retry boundary.', completion_criteria: ['The boundary is verified.'], covers: [0] },
+      { action: 'Run the timeout retry test.', covers: [0] },
+      { action: 'Trace key generation.', covers: [0] },
+      { action: 'Confirm the retry boundary.', covers: [0] },
     ],
   } })
   const first = initial.current_sub_step!
@@ -35,10 +35,9 @@ test('validates one planned SubState across completed, current, and pending regi
     completed_sub_steps: [{
       sub_step_id: first.sub_step_id,
       action: first.action,
-      completion_criteria: first.completion_criteria,
       covers: first.covers,
       summary: 'The retry path creates two charges.',
-      source_events: ['event-4'],
+      criterion_evidence: [{ criterion_id: first.covers[0]!, source_events: ['event-4'] }],
       artifact_refs: [{ artifact_id: 'artifact-000001', relation: 'produced' }],
     }],
     current_sub_step: { ...second, continuation: null },
@@ -46,12 +45,51 @@ test('validates one planned SubState across completed, current, and pending regi
   })
   assert.equal(subState.current_sub_step?.sub_step_id, second.sub_step_id)
   assert.throws(() => validateSubState({ ...subState, current_sub_step: { ...subState.current_sub_step!, sub_step_id: first.sub_step_id } }), /duplicate sub_step_id/)
+  assert.throws(() => validateSubState({ ...subState, sub_state_id: 'sub-state-000001' }), /unexpected field: sub_state_id/)
+  assert.throws(() => validateSubState({ ...subState, current_sub_step: { ...subState.current_sub_step!, completion_criteria: ['Duplicate.'] } }), /unexpected field: completion_criteria/)
+})
+
+test('requires completed SubStep evidence to exactly cover its Step criteria', () => {
+  const initial = plannedSubState({ plan: {
+    step_completion_criteria: ['The write succeeded.', 'The saved state was read back.'],
+    sub_steps: [{ action: 'Write then verify.', covers: [0, 1] }],
+  } })
+  const current = initial.current_sub_step!
+  const completed = {
+    sub_step_id: current.sub_step_id,
+    action: current.action,
+    covers: current.covers,
+    summary: 'The write and read-back are complete.',
+    artifact_refs: [],
+  }
+  assert.throws(() => validateSubState({
+    ...initial,
+    completed_sub_steps: [{ ...completed, criterion_evidence: [{ criterion_id: current.covers[0]!, source_events: ['event-4'] }] }],
+    current_sub_step: null,
+  }), /missing evidence for criterion_id/)
+  assert.throws(() => validateSubState({
+    ...initial,
+    completed_sub_steps: [{ ...completed, criterion_evidence: [
+      { criterion_id: current.covers[0]!, source_events: ['event-4'] },
+      { criterion_id: 'criterion-999999', source_events: ['event-5'] },
+    ] }],
+    current_sub_step: null,
+  }), /does not belong to the completed SubStep/)
+  const valid = validateSubState({
+    ...initial,
+    completed_sub_steps: [{ ...completed, criterion_evidence: [
+      { criterion_id: current.covers[0]!, source_events: ['event-4'] },
+      { criterion_id: current.covers[1]!, source_events: ['event-5'] },
+    ] }],
+    current_sub_step: null,
+  })
+  assert.equal(valid.completed_sub_steps[0]?.criterion_evidence.length, 2)
 })
 
 test('keeps unfinished recovery navigation only on the current SubStep', () => {
   const initial = plannedSubState({ plan: {
     step_completion_criteria: ['Every course announcement is collected.'],
-    sub_steps: [{ action: 'Collect all course announcements.', completion_criteria: ['Every course is covered.'], covers: [0] }],
+    sub_steps: [{ action: 'Collect all course announcements.', covers: [0] }],
   } })
   const subState = validateSubState({
     ...initial,
@@ -65,10 +103,15 @@ test('keeps unfinished recovery navigation only on the current SubStep', () => {
     },
   })
   assert.equal(subState.current_sub_step?.continuation?.resume_from, 'Continue with course 41.')
-  assert.throws(() => validateSubState({
+  const textOnly = validateSubState({
     ...subState,
     current_sub_step: { ...subState.current_sub_step!, continuation: { ...subState.current_sub_step!.continuation!, working_resources: [] } },
-  }), /working_resources must contain at least one item/)
+  })
+  assert.deepEqual(textOnly.current_sub_step?.continuation?.working_resources, [])
+  assert.throws(() => validateSubState({
+    ...subState,
+    current_sub_step: { ...subState.current_sub_step!, continuation: { ...subState.current_sub_step!.continuation!, working_resources: null } },
+  }), /working_resources must be an array/)
 })
 
 test('accepts only immutable Artifact metadata with an absolute structured Resource', () => {
@@ -94,16 +137,16 @@ test('checks Step, SubState, and Artifact relationships as one Workspace snapsho
   const initial = plannedSubState({ plan: {
     step_completion_criteria: ['The retry boundary is known.'],
     sub_steps: [
-      { action: 'Run the timeout retry test.', completion_criteria: ['The duplicate is reproduced.'], covers: [0] },
-      { action: 'Trace key generation.', completion_criteria: ['Find the key creation call.'], covers: [0] },
+      { action: 'Run the timeout retry test.', covers: [0] },
+      { action: 'Trace key generation.', covers: [0] },
     ],
   } })
   const first = initial.current_sub_step!
   const subState = validateSubState({
     ...initial,
     completed_sub_steps: [{
-      sub_step_id: first.sub_step_id, action: first.action, completion_criteria: first.completion_criteria, covers: first.covers,
-      summary: 'The retry path creates two charges.', source_events: ['event-4'],
+      sub_step_id: first.sub_step_id, action: first.action, covers: first.covers,
+      summary: 'The retry path creates two charges.', criterion_evidence: [{ criterion_id: first.covers[0]!, source_events: ['event-4'] }],
       artifact_refs: [{ artifact_id: 'artifact-000001', relation: 'produced' }],
     }],
     current_sub_step: { ...initial.pending_sub_steps[0]!, continuation: null },

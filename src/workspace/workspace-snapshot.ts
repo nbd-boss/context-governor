@@ -1,6 +1,6 @@
 import type { SessionWorkspaceProvider } from './session-workspace.ts'
 
-/** Read one recovered durable Workspace snapshot before applying Epoch Deltas. */
+/** Read one recovered durable Workspace snapshot before a mutation. */
 export async function readDurableWorkspace(workspaces: SessionWorkspaceProvider, sessionId: string) {
   const workspace = workspaces.forSession(sessionId)
   await workspace.recover()

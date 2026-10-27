@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 import { AuditRecorder } from '../evidence/audit-recorder.ts'
 import { AuditStore } from '../evidence/audit-store.ts'
@@ -31,7 +31,7 @@ export class SessionWorkspaceProvider {
 
   constructor(
     private readonly rootDirectory: string,
-    private readonly artifactResourceRoot = dirname(rootDirectory),
+    private readonly sessionDirectory: (sessionId: string) => string | undefined = () => undefined,
   ) {}
 
   forSession(sessionId: string): SessionWorkspace {
@@ -39,12 +39,19 @@ export class SessionWorkspaceProvider {
     if (cached !== undefined) return cached
     const workspaceRoot = join(this.rootDirectory, 'sessions', safeDirectoryName(sessionId))
     const state = new ContextStateStore(join(workspaceRoot, 'state.json'))
+    const resourceRoot = () => {
+      const directory = this.sessionDirectory(sessionId)
+      if (directory === undefined || !isAbsolute(directory)) {
+        throw new Error(`Session workspace cwd is unavailable or not absolute: ${sessionId}`)
+      }
+      return directory
+    }
     const workspace: SessionWorkspace = {
       state,
       sub_states: new SubStateStore(join(workspaceRoot, 'sub_states')),
       artifacts: new ArtifactStore(join(workspaceRoot, 'artifacts')),
-      artifact_service: new ArtifactService(this.artifactResourceRoot),
-      continuation_service: new ContinuationService(this.artifactResourceRoot),
+      get artifact_service() { return new ArtifactService(resourceRoot()) },
+      get continuation_service() { return new ContinuationService(resourceRoot()) },
       transition: new TransitionCommit(new TransitionStore(workspaceRoot)),
       audits: new AuditRecorder(new AuditStore(join(workspaceRoot, 'audit'))),
       async recover(): Promise<boolean> {

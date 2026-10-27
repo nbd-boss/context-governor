@@ -1,113 +1,92 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '../../../deepseek-harness/packages/core/tools/src/index.ts'
 
-import { EpochDeltaBuffer } from '../epoch/epoch-delta-buffer.ts'
 import { PLANNING_CORE_GUIDANCE, STEP_PLANNING_GUIDANCE } from '../agent-guidance.ts'
-import { readDurableWorkspace } from '../workspace/workspace-snapshot.ts'
-import type { SessionWorkspaceProvider } from '../workspace/session-workspace.ts'
-import type { ContextState } from '../state/state-contract.ts'
-import type { PendingStepPlanDraft } from '../planning/step-plan.ts'
-import { pendingStepPlanItemSchema, stateOutputSchema } from './tool-schemas.ts'
-
-const pendingStepsSchema = {
-  type: 'array' as const, required: true,
-  items: pendingStepPlanItemSchema,
-} as const
+import type { WorkspaceMutations } from '../workspace/workspace-mutations.ts'
+import type { WorkspaceSnapshot } from '../workspace/workspace-validator.ts'
+import { applyDiscoveredConstraints, appendUserConstraint, reviseStateStep } from '../state/state-contract.ts'
+import type { StepChange } from '../planning/step-plan.ts'
+import { discoveredConstraintChangeSchema, stepChangeSchema, stateOutputSchema, nullableSubStateOutputSchema } from './tool-schemas.ts'
+import { requireSessionEventIds } from './session-evidence.ts'
+import { PENDING_PLAN_REVISION_GUIDANCE } from '../agent-guidance.ts'
 
 function currentSessionEvents(exec: { agent?: { session: { snapshotEvents(): readonly { seq: number; type: string }[] } } }): readonly { seq: number; type: string }[] {
   if (exec.agent === undefined) throw new Error('State Delta tools require an active Session.')
   return exec.agent.session.snapshotEvents()
 }
 
-function requireEventIds(value: unknown, events: readonly { seq: number }[], field: string): asserts value is string[] {
-  if (!Array.isArray(value) || value.length === 0 || value.some(id => typeof id !== 'string' || !/^event-(0|[1-9]\d*)$/.test(id))) {
-    throw new Error(`${field} must contain one or more event-N identifiers`)
-  }
-  if (value.some(id => !events.some(event => event.seq === Number(id.slice('event-'.length))))) {
-    throw new Error(`${field} must reference events in the current Session`)
-  }
-}
-
-function deltaOutput(snapshot: { revision: number; projected: { state: ContextState; sub_states: Array<{ step_id: string }> } }) {
-  const active = snapshot.projected.state.task_plan.steps.find(step => step.status === 'in_progress')
+function deltaOutput(snapshot: WorkspaceSnapshot) {
+  const active = snapshot.state.task_plan.steps.find(step => step.status === 'in_progress')
   return {
-    status: 'recorded',
-    epoch_revision: snapshot.revision,
-    state: snapshot.projected.state,
-    current_sub_state: active === undefined ? null : snapshot.projected.sub_states.find(subState => subState.step_id === active.step_id) ?? null,
+    status: 'committed',
+    state_revision: snapshot.state.revision,
+    state: snapshot.state,
+    current_sub_state: active === undefined ? null : snapshot.sub_states.find(subState => subState.step_id === active.step_id) ?? null,
   }
 }
 
 const output = {
   schema: { type: 'object' as const, additionalProperties: false, properties: {
     status: { type: 'string' as const, required: true },
-    epoch_revision: { type: 'integer' as const, required: true },
+    state_revision: { type: 'integer' as const, required: true },
     state: stateOutputSchema,
-    current_sub_state: { type: 'object' as const, additionalProperties: true, properties: {} },
+    current_sub_state: nullableSubStateOutputSchema,
   } },
   render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
-}
+} as const
 
-/** State-only changes use the same in-memory Delta and boundary transaction as SubStep progress. */
-export function registerStateDeltaTools(ctx: Context, workspaces: SessionWorkspaceProvider, deltas: EpochDeltaBuffer): void {
+/** State-only changes use the same immediate Workspace transaction as SubStep progress. */
+export function registerStateDeltaTools(ctx: Context, mutations: WorkspaceMutations): void {
   ctx.tools.register(defineTool({
-    name: 'revise_task_plan',
-    description: `Revise only not-yet-started pending Steps in the current Epoch. Supply the complete desired pending_steps order: retain a Step by its step_id, omit step_id only for a new Step, and omit an old pending Step to remove it. Use the immutable task_plan completion-criteria indexes in covers. Active and done Steps cannot change. inputs/result are planning-only and are discarded. This records an in-memory Delta only. ${PLANNING_CORE_GUIDANCE} ${STEP_PLANNING_GUIDANCE}`,
+    name: 'revise_step',
+    description: `Add, update, or delete exactly one pending top-level Step. add appends a new Step and Governor allocates its ID. update preserves the existing Step ID and position; delete removes only that pending plan entry. Use task_plan completion-criteria indexes in covers. inputs/result are planning-only. Active and done Steps cannot change.\n\n${PENDING_PLAN_REVISION_GUIDANCE}\n\n${PLANNING_CORE_GUIDANCE}\n\n${STEP_PLANNING_GUIDANCE}`,
     parameters: {
-      reason: { type: 'string', required: true },
-      expected_epoch_revision: { type: 'integer', required: true },
-      pending_steps: pendingStepsSchema,
+      expected_state_revision: { type: 'integer', required: true },
+      change: { ...stepChangeSchema, required: true },
     },
     output,
     async execute(args, exec) {
-      if (exec.agent === undefined) throw new Error('revise_task_plan requires an active Session.')
-      const sessionId = exec.agent.session.id
-      const durable = await readDurableWorkspace(workspaces, sessionId)
-      const snapshot = deltas.recordPlanRevision({
-        sessionId, durable, expectedRevision: args.expected_epoch_revision as number, reason: args.reason as string,
-        operation: { pending_steps: args.pending_steps as PendingStepPlanDraft[] },
-      })
+      if (exec.agent === undefined) throw new Error('revise_step requires an active Session.')
+      const snapshot = await mutations.apply(exec.agent.session.id, args.expected_state_revision as number, base => ({
+        ...base,
+        state: reviseStateStep(base.state, { change: args.change as StepChange }),
+      }))
       return deltaOutput(snapshot)
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'record_discovered_constraint',
-    description: 'Record one confirmed runtime constraint that will continue to restrict later work. This is not for hypotheses or ordinary observations. Provide current-Session evidence, and it remains an in-memory Delta until the next boundary.',
+    description: 'Record one confirmed runtime constraint or replace specified active constraints, following context_governor.decision_checks.after_reconnaissance. condition states when and where it applies; required_behavior states the resulting action requirement; source_events identifies supporting original events in the execution History. replaces is required: [] adds an independent boundary; existing constraint_id values explicitly retire those boundaries and add this replacement with a new Governor-generated ID. State keeps only effective constraints; original calls remain in History. A successful change is atomically persisted.',
     parameters: {
-      reason: { type: 'string', required: true },
-      expected_epoch_revision: { type: 'integer', required: true },
-      kind: { type: 'string', required: true, enum: ['retry_safety', 'external_contract', 'environment_limit'] },
-      condition: { type: 'string', required: true },
-      required_behavior: { type: 'string', required: true },
-      source_events: { type: 'array', required: true, items: { type: 'string' } },
+      expected_state_revision: { type: 'integer', required: true },
+      ...discoveredConstraintChangeSchema.properties,
     },
     output,
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('record_discovered_constraint requires an active Session.')
       const sessionId = exec.agent.session.id
       const sourceEvents = args.source_events as unknown
-      requireEventIds(sourceEvents, currentSessionEvents(exec), 'source_events')
-      const durable = await readDurableWorkspace(workspaces, sessionId)
-      const snapshot = deltas.recordDiscoveredConstraint({
-        sessionId, durable, expectedRevision: args.expected_epoch_revision as number, reason: args.reason as string,
-        operation: {
+      requireSessionEventIds(sourceEvents, currentSessionEvents(exec), 'source_events')
+      const snapshot = await mutations.apply(sessionId, args.expected_state_revision as number, base => ({
+        ...base,
+        state: applyDiscoveredConstraints(base.state, [{
           kind: args.kind as 'retry_safety' | 'external_contract' | 'environment_limit',
           condition: args.condition as string,
           required_behavior: args.required_behavior as string,
           source_events: sourceEvents,
-        },
-      })
+          replaces: args.replaces as string[],
+        }]),
+      }))
       return deltaOutput(snapshot)
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'record_user_constraint',
-    description: 'Append one new explicit human requirement to State. source_event must be the current Session user/message that supplied it. This tool cannot remove or rewrite existing user constraints, and it records only an in-memory Delta until the next boundary.',
+    description: 'Append one new explicit human requirement to State. source_event must be the current Session user/message that supplied it. This tool cannot remove or rewrite existing user constraints; a successful change is atomically persisted.',
     parameters: {
-      reason: { type: 'string', required: true },
-      expected_epoch_revision: { type: 'integer', required: true },
+      expected_state_revision: { type: 'integer', required: true },
       constraint: { type: 'string', required: true },
       source_event: { type: 'string', required: true },
     },
@@ -116,14 +95,13 @@ export function registerStateDeltaTools(ctx: Context, workspaces: SessionWorkspa
       if (exec.agent === undefined) throw new Error('record_user_constraint requires an active Session.')
       const sessionId = exec.agent.session.id
       const events = currentSessionEvents(exec)
-      requireEventIds([args.source_event], events, 'source_event')
+      requireSessionEventIds([args.source_event], events, 'source_event')
       const event = events.find(candidate => candidate.seq === Number((args.source_event as string).slice('event-'.length)))
       if (event?.type !== 'user/message') throw new Error('source_event must identify a current Session user/message')
-      const durable = await readDurableWorkspace(workspaces, sessionId)
-      const snapshot = deltas.recordUserConstraint({
-        sessionId, durable, expectedRevision: args.expected_epoch_revision as number, reason: args.reason as string,
-        operation: { constraint: args.constraint as string },
-      })
+      const snapshot = await mutations.apply(sessionId, args.expected_state_revision as number, base => ({
+        ...base,
+        state: appendUserConstraint(base.state, { constraint: args.constraint as string }),
+      }))
       return deltaOutput(snapshot)
     },
   }))

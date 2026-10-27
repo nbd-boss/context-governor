@@ -12,7 +12,7 @@ test('audit records stay per-Epoch and contain retrieval metadata, not raw Histo
   try {
     const audits = new AuditRecorder(new AuditStore(directory))
     await audits.startEpoch({ sessionId: 'session-a', baselineEvent: 'event-12', residentTokens: 456 })
-    await audits.recordRead('session-a', { kind: 'sub_step_index', target: '定位根因' })
+    await audits.recordRead('session-a', { kind: 'sub_state', target: 'step-000001' })
     await audits.recordRead('session-a', { kind: 'event_range', target: 'event-7..event-10' })
     await audits.closeEpoch({
       sessionId: 'session-a', reason: '阶段结论已确认', endEvent: 'event-20', stateChanged: true,
@@ -24,7 +24,7 @@ test('audit records stay per-Epoch and contain retrieval metadata, not raw Histo
     const records = await audits.list('session-a')
     assert.equal(records.length, 2)
     assert.deepEqual(records[0]?.reads, [
-      { kind: 'sub_step_index', target: '定位根因' },
+      { kind: 'sub_state', target: 'step-000001' },
       { kind: 'event_range', target: 'event-7..event-10' },
     ])
     assert.equal(records[0]?.switch?.end_event, 'event-20')

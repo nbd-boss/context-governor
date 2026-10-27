@@ -2,7 +2,7 @@ import { validateArtifact, type Artifact } from '../evidence/artifact-contract.t
 import { deriveExecutionMode, validateContextState, type ContextState } from '../state/state-contract.ts'
 import { validateSubState, type SubState } from '../state/sub-state-contract.ts'
 
-/** The complete durable task snapshot checked before an Epoch boundary commit. */
+/** The complete durable task snapshot checked before each committed mutation. */
 export interface WorkspaceSnapshot {
   state: ContextState
   sub_states: SubState[]
@@ -24,7 +24,7 @@ export function validateWorkspaceSnapshot(value: WorkspaceSnapshot): WorkspaceSn
   for (const step of state.task_plan.steps) {
     const subState = statesByStep.get(step.step_id)
     if (step.status === 'pending' && subState !== undefined) throw new Error(`Pending Step must not have SubState: ${step.step_id}`)
-    if (step.status !== 'pending' && subState === undefined) throw new Error(`Started Step requires SubState: ${step.step_id}`)
+    if (step.status === 'done' && subState === undefined) throw new Error(`Done Step requires SubState: ${step.step_id}`)
     if (step.status === 'done' && (subState?.current_sub_step !== null || subState.pending_sub_steps.length !== 0)) {
       throw new Error(`Done Step must not have current or pending SubSteps: ${step.step_id}`)
     }
@@ -60,16 +60,16 @@ export function validateWorkspaceSnapshot(value: WorkspaceSnapshot): WorkspaceSn
   for (const artifact of artifacts) {
     if (producers.get(artifact.artifact_id) !== 1) throw new Error(`Artifact requires exactly one produced reference: ${artifact.artifact_id}`)
   }
-  validateMode(state, statesByStep)
+  validateMode(state)
   return { state, sub_states: subStates, artifacts }
 }
 
-function validateMode(state: ContextState, statesByStep: ReadonlyMap<string, SubState>): void {
+function validateMode(state: ContextState): void {
   const mode = deriveExecutionMode(state)
   if (mode === 'working') {
     const active = state.task_plan.steps.filter(step => step.status === 'in_progress')
-    if (active.length !== 1 || active[0] === undefined || statesByStep.get(active[0].step_id)?.current_sub_step === null) {
-      throw new Error('Working Workspace requires exactly one active SubState')
+    if (active.length !== 1 || active[0] === undefined) {
+      throw new Error('Working Workspace requires exactly one active Step')
     }
   }
 }

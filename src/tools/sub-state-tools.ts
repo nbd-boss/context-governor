@@ -3,30 +3,26 @@ import { defineTool } from '../../../deepseek-harness/packages/core/tools/src/in
 
 import { ContextQuery } from '../epoch/context-query.ts'
 import { SessionWorkspaceProvider } from '../workspace/session-workspace.ts'
+import { artifactContainsSchema, subStateOutputSchema } from './tool-schemas.ts'
 
 /** Read a detailed Step SubState by stable identity; it never writes an index. */
 export function registerSubStateTools(ctx: Context, workspaces: SessionWorkspaceProvider): void {
   ctx.tools.register(defineTool({
     name: 'read_sub_state',
-    description: 'Read one Step SubState by its stable step_id. It returns completed SubStep conclusions and lightweight Artifact navigation. Use it before recovering prior work from History, workspace files, or external systems. If Artifact key facts are insufficient but its coverage and available_fields match the exact inputs needed next, call read_artifact with that artifact_id.',
+    description: 'Read one Step SubState by its stable step_id. It returns completed SubStep conclusions and an artifact_catalog containing each referenced Artifact summary once; artifact_refs retain only identity and relation. Use it before recovering prior work from History, workspace files, or external systems. If Artifact key facts are insufficient but its coverage and available_fields match the exact inputs needed next, call read_artifact with that artifact_id.',
     parameters: {
       step_id: { type: 'string', required: true },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: {
-        schema_version: { type: 'integer', required: true },
-        sub_state_id: { type: 'string', required: true },
-        step_id: { type: 'string', required: true },
-        step_completion_criteria: { type: 'array', required: true, items: { type: 'object', additionalProperties: true, properties: {} } },
-        completed_sub_steps: { type: 'array', required: true, items: { type: 'object', additionalProperties: true, properties: {} } },
-        current_sub_step: {
-          required: true,
-          oneOf: [
-            { type: 'object', additionalProperties: true, properties: {} },
-            { type: 'null' },
-          ],
+      schema: { ...subStateOutputSchema, properties: {
+        ...subStateOutputSchema.properties,
+        artifact_catalog: {
+          type: 'array', required: true,
+          items: { type: 'object', additionalProperties: false, properties: {
+            artifact_id: { type: 'string', required: true },
+            contains: artifactContainsSchema,
+          } },
         },
-        pending_sub_steps: { type: 'array', required: true, items: { type: 'object', additionalProperties: true, properties: {} } },
       } },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
