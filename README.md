@@ -175,8 +175,6 @@ node --require "$workspace\context-governor\scripts\tsx-userinfo-fallback.cjs" -
 | --- | --- |
 | [持久化结构](docs/持久化结构.md) | State、SubState、Artifact 的职责与示例 |
 | [Planning](docs/Planning.md) | Step/SubStep 划分、覆盖关系与计划调整 |
-| [Step 更新清单](docs/Step-update-task.md) | 勘察、规划、持久化与切换的实现细节 |
-| [验证计划](docs/验证计划.md) | 整体正确性验证目标与测试集 |
-| [Verifier](docs/Verifier.md) | 实验验收与抽查边界 |
+| [验证计划](docs/验证计划.md) | 固定测试集、验证指标、官方验收与 Context 抽查 |
 
 当前不共享其他 Session 的工作区或原始事件，不提供旧 State/SubState/Artifact 格式迁移，也不为尚未通过工具提交的 Agent 草稿或暂存 Artifact 提供崩溃恢复。

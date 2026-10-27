@@ -104,7 +104,7 @@ Step Planner 面向整个任务：
 - 用户原始要求；
 - 用户明确约束；
 - 用户指定的计划、规范、模板或验收命令；
-- 已确认且会影响任务完成定义的运行约束。
+- 已确认且影响执行方式的运行约束；运行障碍不自动豁免用户要求或降低完成标准。
 
 Step Planner 不读取 Benchmark Ground Truth 或评测器隐藏答案。
 
@@ -141,7 +141,7 @@ Step Planner 还需要：
 
 Step Planner 的规划草稿使用任务级完成标准，以及每个 Step 的 `inputs + step + result + covers`。其中 `inputs` 和 `result` 只存在于规划期；State 的 `task_plan` 只持久化一次任务级完成标准，以及每个 Step 的 `step_id + step + status + covers`。
 
-任务级完成标准初始化后保持不变，`covers` 使用其数组下标，从而不再引入一套 TaskCriterion ID。运行中只允许重规划尚未开始的 Pending Step。
+任务级完成标准保留原文和数组位置，`covers` 使用其下标，不另设 TaskCriterion ID。有依据的修订通过 `replan_task_criteria` 标记旧下标失效并追加新标准，同时调整受影响的 Pending Step；不能直接覆盖或重排旧标准。
 
 ## 5. SubStep Planner
 
@@ -155,6 +155,21 @@ SubStep Planner 只面向当前 Step：
 ```
 
 `step_completion_criteria` 由 Agent 根据权威任务输入、当前 Step、任务约束和相关规范提出。它描述可观察的完成结果，不描述具体执行方法。
+
+进入每个 Step（包括第一个）时，顺序固定为：
+
+```text
+激活 Step，此时可以尚无 SubState
+→ 读取该 Step 覆盖的有效任务级标准
+→ 判断是否需要勘察；只补充影响标准或下一动作的必要证据
+→ 确定有依据的 step_completion_criteria
+→ plan_current_step：一次提交标准及覆盖它们的完整 SubStep 计划
+→ 执行、验证并推进；下一 Step 重复该流程
+```
+
+已有充分证据时直接规划，不为形式重复勘察。仅凭字段存在或名称相似，不能添加新的业务义务；也不能为了结束调查或绕过障碍而虚构标准。未规划状态由“当前 Step 尚无 SubState”表示，不另设状态字段或空 SubState；此时不能完成 SubStep 或 Step，但可以保存辅助切换说明后更换 Epoch。
+
+例如，先规划“定位重试根因”这个 Step，进入后再读取相关代码、确认调用边界及所需证据，然后提交其标准和 SubStep。初始化任务时不要求预先猜测这些实现细节。
 
 ### 5.2 SubStep 的粒度
 
@@ -176,7 +191,7 @@ SubStep 2：确认 idempotency key 的生成位置
 SubStep 3：综合调用链和 key 生成行为确认根因
 ```
 
-### 5.3 当前规划草稿
+### 5.3 规划提交示例
 
 SubStep 规划提交使用：
 
@@ -257,27 +272,44 @@ Agent 使用 `revise_substep` 每次调整一个 Pending SubStep。已有项保�
 
 验收标准发生变化时，使用对应 criteria replan 工具提交标准修订和 `changes` 操作数组。它复用相同的单项修改函数，全部操作在内存完成后校验最终覆盖并一次提交。分配计数随计划持久化，删除和重启都不复用旧 ID。
 
-## 8. 代码边界建议
+### 7.3 标准修订与完成记录
+
+| 层级 | 标准正文的唯一位置 | 修订工具 |
+| --- | --- | --- |
+| 任务 | State 的 `task_plan.completion_criteria` | `replan_task_criteria` |
+| Step | 对应 SubState 的 `step_completion_criteria` | `replan_step_criteria` |
+
+旧标准不覆盖或重排：任务级保留旧下标，Step 级保留旧 Criterion ID，通过停用旧标准并追加新标准修订。两种工具复用普通计划调整的内部单项操作，标准和受影响的 Pending 计划在一次事务中提交，不通过多次嵌套工具调用制造中间状态。
+
+已完成 Step/SubStep 和证据记录保留。新标准如果现有成果不能满足，应安排尚未执行的纠偏工作；不能改写完成记录来声称新要求已满足。修订必须有用户要求、规范或新证据支持，不能因为结果暂时做不到就降低标准。
+
+### 7.4 提交与跨窗口恢复
+
+每次成功的 State/SubState 变更都会立即持久化并增加一个 revision，过时 revision 被拒绝。注册的 Artifact 在完成 SubStep 建立 `produced` 引用时同次提交；未完成工作由 Continuation 保存恢复导航。
+
+当前 Epoch 保留起始基线，以后续工具返回的最新状态为准；切换从最新持久化快照加载。切换说明只提供辅助线索，不覆盖正式状态。事务恢复和资源边界以[持久化结构](持久化结构.md)为准。
+
+## 8. 代码边界
 
 保持小而清晰的模块边界：
 
 ```text
-planning-core.ts
+src/planning/planning-core.ts
   公共规划契约与覆盖校验纯函数
 
-pending-edit.ts
+src/planning/pending-edit.ts
   公共单项新增／修改／删除与 Pending 保护
 
-step-plan.ts
-  Step 规划独有契约、粒度指导和 Task Plan 构造
+src/planning/step-plan.ts
+  Step 规划独有契约、Task Plan 构造与任务标准修订
 
-sub-step-plan.ts
-  SubStep 规划独有契约、粒度指导和 SubState 构造
+src/planning/sub-step-plan.ts
+  SubStep 规划独有契约和 SubState 构造
 
-agent-guidance.ts
+src/agent-guidance.ts
   模型可见规划规则的单一权威来源
 
-应用层 Tool
+src/tools/
   负责调用对应 Planner，不复制规划规则
 
 持久化层
@@ -287,9 +319,9 @@ agent-guidance.ts
 不建立过度泛化的 `GenericPlanner<T>`。公共层只提取真正相同且能够稳定复用的纯逻辑，例如：
 
 ```text
-validateCriteria(...)
-validateCoverage(...)
-findUncoveredCriteria(...)
+validatePlanningCriteria(...)
+validateIndexedCovers(...)
+requireCompleteCoverage(...)
 ```
 
 Step 和 SubStep 的 Tool Schema、ID、状态推进和持久化契约分别实现。
