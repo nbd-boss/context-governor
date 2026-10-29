@@ -1,19 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ARTIFACT_SELECTION_GUIDANCE, CONTEXT_CLOSING_GUIDANCE, CONTEXT_SWITCH_NOTE_GUIDANCE, CONTINUATION_RECOVERY_GUIDANCE, DECISION_CHECK_USAGE, DECISION_CHECKS, EXACT_DATA_TRANSFER_GUIDANCE, formatDecisionCheck, PARENT_OUTCOME_REQUIREMENTS, PENDING_PLAN_REVISION_GUIDANCE, PLANNING_CORE_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY, STEP_PLANNING_GUIDANCE, SUB_STEP_PLANNING_GUIDANCE, SWITCH_RECONCILIATION_GUIDANCE, TASK_COMPLETION_CRITERIA_GUIDANCE } from '../src/agent-guidance.ts'
+import { ARTIFACT_SELECTION_GUIDANCE, CONSTRAINT_HANDOFF_GUIDANCE, CONTEXT_CLOSING_GUIDANCE, CONTEXT_SWITCH_NOTE_GUIDANCE, CONTINUATION_RECOVERY_GUIDANCE, DECISION_CHECK_USAGE, DECISION_CHECKS, EXACT_DATA_TRANSFER_GUIDANCE, formatDecisionCheck, PARENT_OUTCOME_REQUIREMENTS, PENDING_PLAN_REVISION_GUIDANCE, PLANNING_CORE_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY, STEP_PLANNING_GUIDANCE, SUB_STEP_PLANNING_GUIDANCE, SWITCH_RECONCILIATION_GUIDANCE, TASK_COMPLETION_CRITERIA_GUIDANCE } from '../src/agent-guidance.ts'
 import { ADVANCE_TASK_PROGRESS_DESCRIPTION } from '../src/tools/advance-task-progress-tool.ts'
 import { REGISTER_ARTIFACT_DESCRIPTION } from '../src/tools/artifact-tools.ts'
 import { RECORD_CONTINUATION_DESCRIPTION } from '../src/tools/record-continuation-tool.ts'
 import { REVISE_SUBSTEP_DESCRIPTION } from '../src/tools/revise-substep-tool.ts'
 import { SWITCH_CONTEXT_DESCRIPTION } from '../src/tools/switch-context-tool.ts'
+import { STRUCTURE_DESCRIPTIONS } from '../src/structure-description.ts'
+
+test('uses the shared data semantics for placement and switch notes without redefining them', () => {
+  const placement = STRUCTURE_DESCRIPTIONS.information_placement.role
+  assert.ok(DECISION_CHECKS.after_reconnaissance.checks.constraint_recording.includes(placement))
+  assert.equal(formatDecisionCheck('after_reconnaissance').split(placement).length, 2)
+  const switchNote = STRUCTURE_DESCRIPTIONS.switch_note.role
+  assert.equal(CONTEXT_SWITCH_NOTE_GUIDANCE.split(switchNote).length, 2)
+})
 
 test('keeps three decision phases with named checks rather than independent per-sentence triggers', () => {
   assert.deepEqual(Object.keys(DECISION_CHECKS.before_scope_or_external_change.checks), [
     'scope_boundary', 'evidence_quality', 'identity_and_exclusion', 'deterministic_selection', 'known_constraints', 'recovery_effect',
   ])
   assert.deepEqual(Object.keys(DECISION_CHECKS.after_reconnaissance.checks), [
-    'state_semantics', 'authoritative_outcome', 'change_boundary', 'constraint_recording', 'constraint_replacement', 'constraint_handoff',
+    'state_semantics', 'authoritative_outcome', 'change_boundary', 'constraint_recording', 'constraint_replacement',
   ])
   assert.deepEqual(Object.keys(DECISION_CHECKS.before_completion.checks), [
     'criteria_coverage', 'source_correctness', 'tool_outcome', 'authoritative_state',
@@ -42,7 +51,7 @@ test('presents ordinary Guidance as lists without double-bulleting shared handof
   const policies = [
     EXACT_DATA_TRANSFER_GUIDANCE, PLANNING_CORE_GUIDANCE, TASK_COMPLETION_CRITERIA_GUIDANCE,
     STEP_PLANNING_GUIDANCE, SUB_STEP_PLANNING_GUIDANCE, ARTIFACT_SELECTION_GUIDANCE,
-    CONTINUATION_RECOVERY_GUIDANCE, CONTEXT_SWITCH_NOTE_GUIDANCE,
+    CONTINUATION_RECOVERY_GUIDANCE, CONTEXT_SWITCH_NOTE_GUIDANCE, CONSTRAINT_HANDOFF_GUIDANCE,
     SWITCH_RECONCILIATION_GUIDANCE, CONTEXT_CLOSING_GUIDANCE, PENDING_PLAN_REVISION_GUIDANCE,
   ]
   for (const policy of policies) {
@@ -70,6 +79,8 @@ test('closing Guidance permits capability-based handoff without expanding task w
 })
 
 test('separates one planning core from Step and SubStep grain rules', () => {
+  assert.match(PLANNING_CORE_GUIDANCE, /Derive acceptance criteria from authoritative task requirements/)
+  assert.match(PLANNING_CORE_GUIDANCE, /Do not promote a recommended execution method into a mandatory acceptance condition/)
   assert.match(PLANNING_CORE_GUIDANCE, /normalize every parent completion criterion/)
   assert.match(PLANNING_CORE_GUIDANCE, /Split a criterion that combines distinct outputs/)
   assert.match(PLANNING_CORE_GUIDANCE, /independently verifiable results/)
@@ -125,7 +136,7 @@ test('keeps evidence, reconnaissance, and completion checks distinct and places 
   assert.match(reconnaissance, /Step criteria and later execution SubSteps must name the required state transition and authoritative read-back/)
   assert.match(reconnaissance, /initial criteria omitted them/)
   assert.match(reconnaissance, /state transition, final value, and read-back/)
-  assert.match(completion, /For a SubStep, verify its covered criteria/)
+  assert.match(completion, /For a SubStep, identify its covered criteria/)
   assert.match(completion, /Keep Mission outcomes outside this Step's responsibility assigned to later work/)
   assert.match(completion, /independently compare the Mission, directly evidenced authoritative outcomes, and actual evidence/)
   assert.match(completion, /missing criterion does not waive a required outcome/)
@@ -174,7 +185,20 @@ test('separates requested and observed outcomes and checks constraint replacemen
   assert.match(decision, /distinguish what was requested or expected from what was actually observed/)
   assert.match(decision, /identify any unverified inference/)
   assert.match(decision, /only the tested scope and conditions/)
-  assert.match(observation, /ordinary task facts and completed results in SubState summaries or Artifacts/)
+  const correction = DECISION_CHECKS.before_scope_or_external_change.checks.evidence_quality.find(rule => rule.startsWith('When new direct evidence refutes'))!
+  assert.ok(correction)
+  assert.match(correction, /identify the affected results and dependent work/)
+  assert.match(correction, /correct the current handoff, any affected effective constraints, and dependent Agent-generated mutable working files before resuming dependent work/)
+  assert.match(correction, /keep the affected claims explicitly unverified, record their impact in the handoff, and do not use them as trusted inputs/)
+  assert.match(correction, /retain unaffected confirmed progress/)
+  assert.match(correction, /Acknowledging the error only in the current conversation does not correct the saved recovery information/)
+  assert.equal(decision.split(correction).length, 2)
+  assert.match(ADVANCE_TASK_PROGRESS_DESCRIPTION, /context_governor\.decision_checks\.before_scope_or_external_change/)
+  assert.doesNotMatch(CONTINUATION_RECOVERY_GUIDANCE, /Acknowledging the error only in the current conversation/)
+  assert.match(observation, /completed task results in completed SubStep summaries or Artifacts/)
+  assert.match(observation, /Reusable facts from unfinished work, including reconnaissance findings/)
+  assert.match(observation, /Continuation under its real-working-file rules/)
+  assert.match(observation, /the SubStep need not be complete to preserve these facts/)
   assert.match(observation, /candidate recovery paths/)
   assert.match(observation, /current effective constraints and each other in the same submission/)
   assert.match(observation, /Different conditions may coexist/)
@@ -324,8 +348,12 @@ test('preserves assigned parent outcomes when deriving local criteria and before
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /effective State.task_plan.completion_criteria entries referenced by that Step's covers/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /applying the shared parent-outcome requirements rather than selecting only currently achievable work/)
   const completion = formatDecisionCheck('before_completion')
-  assert.match(completion, /Before choosing a progress branch, determine whether the current unit is actually complete/)
-  assert.match(completion, /verify its promised result and the effective task_plan.completion_criteria entries referenced by its covers/)
+  assert.match(completion, /criteria_coverage -> source_correctness -> tool_outcome -> authoritative_state/)
+  assert.match(completion, /Decide whether to submit completion only after all applicable checks establish the required outcomes/)
+  assert.match(completion, /this sequence does not require new tool calls merely to repeat checks/)
+  assert.match(completion, /identify the unit proposed for completion and its effective requirements, without deciding yet that it is complete/)
+  assert.match(completion, /identify its promised result and the effective task_plan.completion_criteria entries referenced by its covers/)
+  assert.match(completion, /If any applicable requirement is unmet or unverified after these checks, do not submit completion/)
   assert.match(completion, /Satisfying all lower-level criteria, having no pending SubSteps, or having no executable action does not by itself establish Step completion/)
   assert.match(ADVANCE_TASK_PROGRESS_DESCRIPTION, /Use advance_step only after the current Step passes context_governor.decision_checks.before_completion/)
 })
@@ -337,7 +365,7 @@ test('records evidenced runtime restrictions and applies them before execution o
   assert.match(observation, /direct evidence confirms a runtime restriction that will govern later work/)
   assert.match(observation, /promptly call record_discovered_constraint/)
   assert.match(observation, /condition, required_behavior, and source_events identifying the supporting original events/)
-  assert.match(observation, /do not leave it only in a Continuation or work note/)
+  assert.match(observation, /Mentioning a restriction in a reply, work note, Continuation, or switch_context.reason does not itself persist it in State.discovered_constraints/)
   assert.match(observation, /Record only the evidenced scope/)
   assert.match(observation, /single failed or timed-out request does not establish a permanent limitation or prove whether the operation completed/)
   assert.match(observation, /current History or an existing handoff/)
@@ -354,24 +382,27 @@ test('records restrictions at path decisions and uses the switch handoff even in
   const observation = formatDecisionCheck('after_reconnaissance')
   const action = formatDecisionCheck('before_scope_or_external_change')
   assert.match(observation, /before choosing another path or retrying/)
-  assert.match(observation, /Before saving a handoff, check for confirmed restrictions/)
-  assert.match(observation, /not already covered by State.discovered_constraints; do not duplicate existing constraints/)
-  assert.match(observation, /switch_context.new_discovered_constraints, or \[\] when none remain/)
-  assert.match(observation, /persists them before the next Epoch, including in closing mode/)
-  assert.match(observation, /do not defer recording to the next Epoch or duplicate them in a Continuation/)
+  assert.doesNotMatch(observation, /Before saving a handoff|switch_context.new_discovered_constraints/)
+  assert.match(CONSTRAINT_HANDOFF_GUIDANCE, /Before saving a handoff, check for confirmed restrictions/)
+  assert.match(CONSTRAINT_HANDOFF_GUIDANCE, /not already covered by State.discovered_constraints; do not duplicate existing constraints/)
+  assert.match(CONSTRAINT_HANDOFF_GUIDANCE, /Before saving a Continuation, persist outstanding confirmed restrictions through record_discovered_constraint/)
+  assert.match(SWITCH_RECONCILIATION_GUIDANCE, /switch_context.new_discovered_constraints, or \[\] when none remain/)
+  assert.match(SWITCH_RECONCILIATION_GUIDANCE, /persists them before the next Epoch, including in closing mode/)
+  assert.match(SWITCH_RECONCILIATION_GUIDANCE, /do not defer recording to the next Epoch or duplicate them in a Continuation/)
   assert.match(action, /a new Context Epoch alone is not such evidence/)
-  const reference = /constraint-recording and handoff checks in context_governor\.decision_checks\.after_reconnaissance/
-  assert.match(RECORD_CONTINUATION_DESCRIPTION, reference)
-  assert.match(SWITCH_CONTEXT_DESCRIPTION, reference)
-  // The decision check owns the rule; handoff descriptions only reference it.
-  for (const description of [RECORD_CONTINUATION_DESCRIPTION, SWITCH_CONTEXT_DESCRIPTION]) {
+  const reference = /constraint-recording and replacement checks in context_governor\.decision_checks\.after_reconnaissance/
+  assert.match(CONSTRAINT_HANDOFF_GUIDANCE, reference)
+  for (const description of [RECORD_CONTINUATION_DESCRIPTION, SWITCH_CONTEXT_DESCRIPTION, CONTEXT_CLOSING_GUIDANCE]) {
+    assert.equal(description.split(CONSTRAINT_HANDOFF_GUIDANCE).length, 2)
     assert.doesNotMatch(description, /before choosing another path or retrying/)
-    assert.doesNotMatch(description, /do not defer recording to the next Epoch or duplicate them in a Continuation/)
   }
+  assert.doesNotMatch(RECORD_CONTINUATION_DESCRIPTION, /new_discovered_constraints/)
 })
 
 test('distinguishes internally plausible reconstructed data from source fidelity', () => {
-  assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /complete source coverage and a reconstruction plan/)
+  assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /preserve traceable source boundaries/)
+  assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /partial coverage is not evidence of complete source coverage/)
+  assert.doesNotMatch(EXACT_DATA_TRANSFER_GUIDANCE, /first identify complete source coverage and a reconstruction plan/)
   assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /omissions, overlaps, reordered records/)
   assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /not by itself evidence that it corresponds completely and accurately to its source/)
   assert.match(EXACT_DATA_TRANSFER_GUIDANCE, /explicitly incomplete or unverified/)
@@ -410,9 +441,13 @@ test('ends reconnaissance at a feasible next action instead of exhaustive route 
   assert.match(STEP_PLANNING_GUIDANCE, /do not wait to exhaust alternative routes or finish the Step's main work before planning/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /bounded operation to confirm a feasible path/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /advance the required result rather than exploring every alternative/)
+  assert.match(SUB_STEP_PLANNING_GUIDANCE, /Confirm complete required input coverage before an operation that depends on the complete set or a full-completion claim/)
+  assert.match(SUB_STEP_PLANNING_GUIDANCE, /keep unknown coverage explicit while advancing bounded work/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /operation fails, direct evidence contradicts it, or relevant conditions change/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /materialize useful partial progress in real working files/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /save it with record_continuation/)
+  assert.match(SUB_STEP_PLANNING_GUIDANCE, /Record cumulative source coverage, remaining uncertainty, and the exact next boundary/)
+  assert.match(SUB_STEP_PLANNING_GUIDANCE, /retaining earlier files still needed for recovery/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /Keep the SubStep active until its covered criteria are met/)
   assert.match(SUB_STEP_PLANNING_GUIDANCE, /a batch is not automatically a new SubStep or an Artifact/)
 })
@@ -476,10 +511,13 @@ test('treats a Continuation as an exact recovery handoff rather than a prompt to
   assert.match(CONTINUATION_RECOVERY_GUIDANCE, /Do not repeat a recorded failed attempt under unchanged conditions/)
   assert.match(CONTINUATION_RECOVERY_GUIDANCE, /not every untested variant/)
   assert.match(CONTINUATION_RECOVERY_GUIDANCE, /a handoff does not make an incomplete or unverified result verified/)
-  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /next bounded portion/)
-  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /cumulative coverage, remaining uncertainty, and the exact next boundary/)
-  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /retain references to earlier portions still needed/)
-  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /saving a batch does not require a Context switch/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /If new evidence conflicts with a handoff conclusion/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /or a referenced working file conflicts with the handoff/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /apply the evidence-quality checks in context_governor\.decision_checks\.before_scope_or_external_change before resuming work that depends on the disputed conclusion/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /return to normal bounded execution/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /use record_continuation for subsequent progress according to its saving rules/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /Do not repeat completed work merely because the Context changed/)
+  assert.match(CONTINUATION_RECOVERY_GUIDANCE, /or switch Context merely because progress was saved/)
   assert.doesNotMatch(CONTINUATION_RECOVERY_GUIDANCE, /then switch Context/)
   assert.match(RECORD_CONTINUATION_DESCRIPTION, /must not merely say to continue working/)
   assert.match(RECORD_CONTINUATION_DESCRIPTION, /remaining uncertainty, and relevant failed attempts with their conditions/)

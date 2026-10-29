@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '../../../deepseek-harness/packages/core/tools/src/index.ts'
 
 import { recordContinuation } from '../epoch/epoch-projection.ts'
+import { CONSTRAINT_HANDOFF_GUIDANCE } from '../agent-guidance.ts'
 import type { SessionWorkspaceProvider } from '../workspace/session-workspace.ts'
 import type { WorkspaceMutations } from '../workspace/workspace-mutations.ts'
 import { stateOutputSchema, nullableSubStateOutputSchema } from './tool-schemas.ts'
@@ -9,13 +10,13 @@ import { stateOutputSchema, nullableSubStateOutputSchema } from './tool-schemas.
 export const RECORD_CONTINUATION_DESCRIPTION = [
   'Persist recovery information for the current incomplete SubStep without changing its criteria, advancing work, or completing the task. A current SubStep must already exist.',
   'operation=save records reusable progress in real mutable workspace files and returns without ending the turn or switching Context. operation=wait_for_input records unmet work and the required external input, then ends the current turn only after the handoff is durably saved; the Step remains in_progress and lifecycle.status remains active.',
-  'Apply the constraint-recording and handoff checks in context_governor.decision_checks.after_reconnaissance.',
+  CONSTRAINT_HANDOFF_GUIDANCE,
   'progress states what is already covered, remaining uncertainty, and relevant failed attempts with their conditions; working_resources names those files and their contents, and resume_from states the exact next action or bounded boundary; it must not merely say to continue working. For wait_for_input, identify the missing prerequisite and its impact in progress, and the required input plus the next action once supplied in resume_from. Before this terminating call, explain the blocker and required input to the user.',
   'save requires at least one real working Resource. wait_for_input may use working_resources=[] for a text-only handoff; never create a placeholder file merely to stop. Any supplied paths must still name real workspace files.',
   'The next Epoch treats this Continuation as its active handoff: do not use it to repeat confirmed retrieval or verification. If output is too large for one operation, persist the next bounded portion and replace this Continuation with the following boundary.',
   'Do not use this for completed work or verified immutable data: use advance_task_progress and, when needed, register_artifact instead.',
   'The Governor derives the active Step and SubStep. A changed Continuation immediately persists one new State revision and replaces the earlier Continuation, not a progress log. wait_for_input can reuse an identical already-durable Continuation without rewriting it. operation controls only this call and is not added to State or SubState.',
-].join(' ')
+].join('\n\n')
 
 /** Register unfinished-work handoff without exposing duplicate identity fields. */
 export function registerRecordContinuationTool(ctx: Context, workspaces: SessionWorkspaceProvider, mutations: WorkspaceMutations): void {

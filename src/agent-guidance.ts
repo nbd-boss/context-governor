@@ -1,3 +1,5 @@
+import { STRUCTURE_DESCRIPTIONS } from './structure-description.ts'
+
 /** Shared model instruction, not an automatic runtime validator. */
 export const DECISION_CHECK_USAGE = 'When a decision phase applies, evaluate every applicable named check; satisfying one check does not satisfy the whole phase. Skip inapplicable checks without adding unrelated work.'
 
@@ -25,6 +27,7 @@ export const DECISION_CHECKS = {
         'Before promoting a conclusion to trusted State, a completion criterion, or a reusable result, distinguish what was requested or expected from what was actually observed, and identify any unverified inference between the observation and conclusion.',
         'A successful check establishes only the tested scope and conditions, not completeness or capability under untested conditions.',
         'Saving or repeating a conclusion in a summary, Artifact, or criterion does not provide independent evidence for it.',
+        'When new direct evidence refutes a saved conclusion, identify the affected results and dependent work. Stop relying on that conclusion and use existing tools to correct the current handoff, any affected effective constraints, and dependent Agent-generated mutable working files before resuming dependent work. If correction remains unresolved, keep the affected claims explicitly unverified, record their impact in the handoff, and do not use them as trusted inputs; retain unaffected confirmed progress. Acknowledging the error only in the current conversation does not correct the saved recovery information.',
       ],
       identity_and_exclusion: [
         'Direct evidence must establish the required relationship or exclusion itself.',
@@ -62,11 +65,10 @@ export const DECISION_CHECKS = {
         'Carry the boundary and proportionate preservation checks into affected criteria and pending work; success for the target records alone does not establish that unrelated data remained intact.',
       ],
       constraint_recording: [
-        'When direct evidence confirms a runtime restriction that will govern later work, promptly call record_discovered_constraint with its condition, required_behavior, and source_events identifying the supporting original events before choosing another path or retrying; do not leave it only in a Continuation or work note.',
-        'Before saving a handoff, check for confirmed restrictions still recorded only in notes or current History and record those not already covered by State.discovered_constraints; do not duplicate existing constraints.',
+        'When direct evidence confirms a runtime restriction that will govern later work, promptly call record_discovered_constraint with its condition, required_behavior, and source_events identifying the supporting original events before choosing another path or retrying. Mentioning a restriction in a reply, work note, Continuation, or switch_context.reason does not itself persist it in State.discovered_constraints.',
         'Record only the evidenced scope of a restriction.',
         'A single failed or timed-out request does not establish a permanent limitation or prove whether the operation completed.',
-        'Put confirmed runtime boundaries in discovered_constraints, ordinary task facts and completed results in SubState summaries or Artifacts as appropriate, and temporary failures, hypotheses, candidate recovery paths, and unresolved outcomes in current History or an existing handoff instead.',
+        STRUCTURE_DESCRIPTIONS.information_placement.role,
       ],
       constraint_replacement: [
         'Before recording constraints, compare their applicability and required behavior with the current effective constraints and each other in the same submission.',
@@ -75,18 +77,14 @@ export const DECISION_CHECKS = {
         'replaces: [] adds an independent boundary.',
         'Governor executes explicit replacements atomically but does not infer semantic conflicts.',
       ],
-      constraint_handoff: [
-        'At a Context switch, submit confirmed restrictions to add or replace through switch_context.new_discovered_constraints, or [] when none remain.',
-        'This handoff persists them before the next Epoch, including in closing mode; do not defer recording to the next Epoch or duplicate them in a Continuation.',
-      ],
     },
     if_unverified: 'Keep unsupported state assumptions out of the plan; leave affected pending work provisional until the evidence is available.',
   },
   before_completion: {
-    when: 'Before completing a SubStep, Step, or task',
+    when: 'Before completing a SubStep, Step, or task, evaluate applicable checks in this order: criteria_coverage -> source_correctness -> tool_outcome -> authoritative_state. Decide whether to submit completion only after all applicable checks establish the required outcomes. Reuse sufficient applicable evidence; this sequence does not require new tool calls merely to repeat checks.',
     checks: {
       criteria_coverage: [
-        'Before choosing a progress branch, determine whether the current unit is actually complete. For a SubStep, verify its covered criteria; for a Step, verify its promised result and the effective task_plan.completion_criteria entries referenced by its covers. Keep Mission outcomes outside this Step\'s responsibility assigned to later work. Satisfying all lower-level criteria, having no pending SubSteps, or having no executable action does not by itself establish Step completion.',
+        'First identify the unit proposed for completion and its effective requirements, without deciding yet that it is complete. For a SubStep, identify its covered criteria; for a Step, identify its promised result and the effective task_plan.completion_criteria entries referenced by its covers; for the task, identify every effective task-level criterion and Mission-required outcome. Use these obligations as the basis for the remaining checks. Keep Mission outcomes outside this Step\'s responsibility assigned to later work. Satisfying all lower-level criteria, having no pending SubSteps, or having no executable action does not by itself establish Step completion.',
         ...PARENT_OUTCOME_REQUIREMENTS,
         'Before completing the task, independently compare the Mission, directly evidenced authoritative outcomes, and actual evidence; a missing criterion does not waive a required outcome.',
         'Apply context_governor.decision_checks.before_scope_or_external_change to conclusions used as completion evidence.',
@@ -100,8 +98,8 @@ export const DECISION_CHECKS = {
       ],
       tool_outcome: [
         'Inspect actual tool-result content for failure, partial success, or an unresolved outcome even when the call returns normally or reports no tool-level error.',
-        'An attempted action is not a successful outcome.',
-        'Creating, importing, or updating a record that describes an action proves that record changed, not that the action occurred. Use such a record as evidence of the action only when authoritative operation semantics establish that effect or direct outcome evidence confirms it.',
+        'Before claiming completion, compare the required effect, what the operation actually changed, and what the evidence establishes. Distinguish invoking an operation, successfully performing that operation, and achieving the required outcome; success at either of the first two levels does not establish the third.',
+        'Creating, importing, or updating a record that describes an action proves that record changed, not that the action occurred. Reading back those same records, even with complete counts and matching content, does not independently establish the described effect. Use such a record as evidence of the action only when authoritative operation semantics establish that effect or direct outcome evidence confirms it; verification must test the required effect rather than merely the substitute operation.',
         'Resolve contradictory evidence through authoritative results before claiming success; do not convert an error into a success summary, Artifact fact, or completion claim.',
       ],
       authoritative_state: [
@@ -110,7 +108,7 @@ export const DECISION_CHECKS = {
         'Verify any directly specified preservation condition as well, and apply the change-boundary checks in context_governor.decision_checks.after_reconnaissance.',
       ],
     },
-    if_unverified: 'Keep an unverified claimed outcome in progress, preserving confirmed partial progress and unresolved failures in History or an existing handoff rather than claiming completion. If a Mission-required outcome is missing from the plan, assign it to later work or reconcile it before task completion. When blocked, explain the partial progress, missing input, and recovery condition to the user; if a current SubStep exists, persist that handoff with record_continuation operation=wait_for_input to end the turn while lifecycle.status remains active. Without a current SubStep, end the reply with a truthful partial-progress and blocker report while lifecycle.status remains active; do not invent a plan or file merely to stop. complete_task is permitted only after successful completion, not required at the end of every attempt; do not rewrite requirements to satisfy its preconditions.',
+    if_unverified: 'If any applicable requirement is unmet or unverified after these checks, do not submit completion. Keep an unverified claimed outcome in progress, preserving confirmed partial progress and unresolved failures in History or an existing handoff rather than claiming completion. If a Mission-required outcome is missing from the plan, assign it to later work or reconcile it before task completion. When blocked, explain the partial progress, missing input, and recovery condition to the user; if a current SubStep exists, persist that handoff with record_continuation operation=wait_for_input to end the turn while lifecycle.status remains active. Without a current SubStep, end the reply with a truthful partial-progress and blocker report while lifecycle.status remains active; do not invent a plan or file merely to stop. complete_task is permitted only after successful completion, not required at the end of every attempt; do not rewrite requirements to satisfy its preconditions.',
   },
 } as const
 
@@ -132,7 +130,7 @@ export const EXACT_DATA_TRANSFER_GUIDANCE = formatGuidance([
   'Source values re-entered by the model as code literals or write-tool arguments are model transcription, not direct transfer, even when a program saves or computes from them. Shortening or encoding those values does not change this.',
   'Internal processing may use codes, aliases, or other compact representations, but retain a reliable mapping to source values. Final deliverables must use the representation explicitly required by the task; absent an explicit transformation requirement, preserve source names and identifiers. Before publishing, verify that final values correspond to the source in the required representation; agreement between outputs alone does not establish this.',
   'When planning work that reconstructs exact inputs, make source correspondence explicit in the affected Step completion criteria for the fields and relationships needed downstream. Order the SubSteps so that source verification precedes dependent use; do not add a new task-level deliverable merely for this internal check.',
-  'When direct transfer is unavailable and data must be reconstructed from bounded source results, first identify complete source coverage and a reconstruction plan. Preserve enough source boundaries to detect omissions, overlaps, reordered records, or changed field relationships. Verify each reconstructed portion against its source before treating it as verified input for dependent calculation, filtering, or external writes.',
+  'When direct transfer is unavailable and data must be reconstructed from bounded source results, preserve traceable source boundaries to detect omissions, overlaps, reordered records, or changed field relationships. Verify each reconstructed portion against its source before treating it as verified input for dependent calculation, filtering, or external writes. Verification establishes fidelity only for the covered portion; partial coverage is not evidence of complete source coverage.',
   'A reconstructed result that parses, has a plausible count, or satisfies internal statistics is not by itself evidence that it corresponds completely and accurately to its source. Match reconstructed records to source records by stable identity or source position and compare the required field values and relationships, including entity roles and relationship direction, as well as coverage and partition boundaries. Recomputing from the same reconstructed input or reading back a downstream write does not establish source fidelity.',
   'Use the existing completion summary and source_events to identify the actual source-comparison scope and supporting evidence. A spot check supports only the sampled records; do not expand sampling, count checks, or internal consistency into a claim that every required source value was verified. Reuse sufficient applicable comparisons without repeating them solely for completion bookkeeping.',
   'If available checks cannot establish the required fidelity, keep the result explicitly incomplete or unverified; do not treat it as verified exact input for dependent calculation, filtering, or external writes. Model transcription remains a last resort and must be treated as reconstructed data rather than a direct copy.',
@@ -141,6 +139,7 @@ export const EXACT_DATA_TRANSFER_GUIDANCE = formatGuidance([
 /** One source for the result-first method shared by both planning levels. */
 export const PLANNING_CORE_GUIDANCE = formatGuidance([
   ...PARENT_OUTCOME_REQUIREMENTS,
+  'Derive acceptance criteria from authoritative task requirements. Do not promote a recommended execution method into a mandatory acceptance condition.',
   'Before planning children, normalize every parent completion criterion into one observable condition at this planning level. Split a criterion that combines distinct outputs, files, or conditions that different children would establish.',
   'Work result-first from the complete parent acceptance criteria: identify independently verifiable results, then give each result its conceptual inputs and one main unit of work.',
   'Multiple inputs belong together only when they jointly produce the same result and share one verification boundary.',
@@ -166,7 +165,7 @@ export const STEP_PLANNING_GUIDANCE = formatGuidance([
   'Plan the whole Mission as ordered major stages or milestones. A Step may span multiple Context Epochs and may contain several related reusable results, but completing it must materially advance the overall task stage.',
   'Steps implement the fixed task completion criteria; they must not reinterpret or narrow required deliverables, coverage, or decision rules.',
   'When an activated Step depends on unresolved external evidence that affects its acceptance criteria, inspect only what is needed before calling plan_current_step. If existing authoritative evidence is enough, plan immediately. Use revise_step for a pending top-level Step and revise_substep for a pending SubStep. If a criterion itself changes, revise it with affected work through the criteria replan tool.',
-  'Stop pre-planning reconnaissance once evidence is sufficient to establish criteria and a feasible next action; do not wait to exhaust alternative routes or finish the Step\'s main work before planning.',
+  'Stop pre-planning reconnaissance once evidence is sufficient to establish criteria and a feasible next action; do not wait to exhaust alternative routes or finish the Step\'s main work before planning. Do not make exhaustive knowledge of the source or the entire execution route a prerequisite for a safe next operation unless that operation actually depends on it.',
   'Do not create a Step for one tool call, one file read, one search, one implementation detail, or an arbitrary fixed item batch.',
   'For each Step, inputs and result are planning-only explanations; Governor persists only step, status, and covers.',
 ])
@@ -178,8 +177,8 @@ export const SUB_STEP_PLANNING_GUIDANCE = formatGuidance([
   'When planning or revising SubSteps after relevant reconnaissance, apply context_governor.decision_checks.after_reconnaissance to the Step criteria and affected pending work.',
   'For reconstructed exact inputs, apply context_governor.exact_data_transfer_policy when setting Step criteria and ordering SubSteps.',
   'When the active current SubStep is independently verifiable reconnaissance, inspect only the evidence needed to resolve the external contract. Before completing it, use revise_substep if provisional pending items need an evidence-based execution plan; reconnaissance itself must not claim that an external action or write is complete.',
-  'When reconnaissance directly establishes a safe execution boundary, such as a source page boundary, result-size limit, rate limit, or other tool constraint, use a bounded operation to confirm a feasible path, then advance the required result rather than exploring every alternative. Treat the boundary as established until an operation fails, direct evidence contradicts it, or relevant conditions change; do not keep re-investigating it merely to regain confidence.',
-  'When a SubStep needs multiple bounded operations, materialize useful partial progress in real working files and save it with record_continuation before it would otherwise need to be reconstructed. Keep the SubStep active until its covered criteria are met; a batch is not automatically a new SubStep or an Artifact.',
+  'When reconnaissance directly establishes a safe execution boundary, such as a source page boundary, result-size limit, rate limit, or other tool constraint, use a bounded operation to confirm a feasible path, then advance the required result rather than exploring every alternative. A successful bounded operation supports the next operation under the tested conditions, not a claim of complete coverage; do not delay useful execution merely to prove the entire route in advance. Confirm complete required input coverage before an operation that depends on the complete set or a full-completion claim; keep unknown coverage explicit while advancing bounded work. Treat the boundary as established until an operation fails, direct evidence contradicts it, or relevant conditions change; do not keep re-investigating it merely to regain confidence.',
+  'When a SubStep needs multiple bounded operations, materialize useful partial progress in real working files and save it with record_continuation before it would otherwise need to be reconstructed, especially before a Context switch. Record cumulative source coverage, remaining uncertainty, and the exact next boundary, retaining earlier files still needed for recovery; a proposed extraction method or switch note alone does not preserve already obtained exact data. Keep the SubStep active until its covered criteria are met; a batch is not automatically a new SubStep or an Artifact.',
   'Each submitted item is one candidate SubStep with one independently verifiable and reusable result that can normally be advanced within one Context Epoch.',
   'Write each SubStep action as an observable result, not merely a tool operation. inputs and result are planning-only explanations; Governor persists only action and covers.',
   'Never create a SubStep for one tool call, one file read, one search, or unverified partial work.',
@@ -209,25 +208,34 @@ export const PRIOR_WORK_RETRIEVAL_POLICY = {
 /** One source for resuming an incomplete SubStep after an Epoch boundary. */
 export const CONTINUATION_RECOVERY_GUIDANCE = formatGuidance([
   'A non-null current_sub_step.continuation is the active handoff for this Epoch: treat resume_from as the next work objective before ordinary recovery or re-planning.',
-  'Reuse evidence-backed continuation.progress; do not re-derive or revalidate it merely to regain confidence. Preserve stated uncertainty: a handoff does not make an incomplete or unverified result verified.',
+  'Reuse evidence-backed continuation.progress; do not re-derive or revalidate it merely to regain confidence. Preserve stated uncertainty: a handoff does not make an incomplete or unverified result verified. If new evidence conflicts with a handoff conclusion, or a referenced working file conflicts with the handoff, apply the evidence-quality checks in context_governor.decision_checks.before_scope_or_external_change before resuming work that depends on the disputed conclusion.',
   'If resume_from requires external input, confirm that the needed input has actually been supplied before resuming affected work. A new message saying to continue or a new Context Epoch does not itself satisfy that prerequisite; otherwise preserve the unmet work and use record_continuation operation=wait_for_input again.',
   'Read a declared working_resource only when its exact contents are required to execute resume_from. Do not read unrelated Artifacts, History, or workspace files, and do not re-query external systems merely to re-establish facts already captured by the Continuation.',
   'When the Continuation records an established execution boundary, use that boundary for the next safe operation and advance it after materializing the result. Re-investigate the boundary only after that operation fails, direct evidence contradicts it, or relevant conditions change. Do not repeat a recorded failed attempt under unchanged conditions; a failure rules out the attempted operation, not every untested variant.',
-  'If the remaining output cannot be materialized in one safe operation, write the next bounded portion into a real working file and update the Continuation with cumulative coverage, remaining uncertainty, and the exact next boundary; retain references to earlier portions still needed for recovery. Continue in the same Epoch when useful; saving a batch does not require a Context switch. Switch at a natural handoff or when context pressure requires it. Do not spend repeated Epochs re-reading the same inputs without advancing that boundary.',
+  'After resuming, return to normal bounded execution and use record_continuation for subsequent progress according to its saving rules. Do not repeat completed work merely because the Context changed, or switch Context merely because progress was saved.',
 ])
 
 /** One source for the auxiliary switch note, distinct from durable recovery state. */
 export const CONTEXT_SWITCH_NOTE_GUIDANCE = formatGuidance([
   'Keep switch_context.reason brief: explain the switch and include only necessary handoff information not already captured by the durable State, SubState, or Continuation. Do not copy the full progress record; do not omit the only recovery clue merely to shorten the note.',
-  'Governor carries reason into the next Epoch as switch_note and records it in the Epoch audit. This auxiliary note is not a state update, a completion claim, or verified evidence; it does not overwrite or merge into State, SubState, or Continuation.',
+  STRUCTURE_DESCRIPTIONS.switch_note.role,
   'Resume from the latest durable State, SubState, and any current Continuation. If switch_note conflicts with them in a way that affects execution, check the relevant evidence and use the appropriate state tool for any justified correction; never change status, criteria, or progress solely because the note asserts a change.',
   'When no Continuation exists, use the note as a provisional recovery lead: preserve confirmed progress, relevant failed attempts and their conditions, real file paths when present, unresolved questions, and the next bounded action. If the Step has no SubState, inspect only the evidence needed to establish criteria, then call plan_current_step; do not invent a SubStep or call record_continuation before a SubState exists.',
+])
+
+/** Shared check before saving a Continuation or switching Contexts. */
+export const CONSTRAINT_HANDOFF_GUIDANCE = formatGuidance([
+  'Before saving a handoff, check for confirmed restrictions still recorded only in notes or current History and record those not already covered by State.discovered_constraints; do not duplicate existing constraints.',
+  'Apply the constraint-recording and replacement checks in context_governor.decision_checks.after_reconnaissance to any outstanding restrictions; do not promote temporary failures or unsupported hypotheses into constraints.',
+  'Before saving a Continuation, persist outstanding confirmed restrictions through record_discovered_constraint. At a Context switch, use the constraint submission described by switch_context instead. A Continuation is not a substitute for State.discovered_constraints.',
 ])
 
 /** Reconcile planned work or hand off reconnaissance without inventing completion. */
 export const SWITCH_RECONCILIATION_GUIDANCE = formatGuidance([
   'Before switching, reconcile actual work with the projected SubState when one exists.',
-  'Apply the constraint-recording and handoff checks in context_governor.decision_checks.after_reconnaissance.',
+  CONSTRAINT_HANDOFF_GUIDANCE,
+  'At a Context switch, submit confirmed restrictions to add or replace through switch_context.new_discovered_constraints, or [] when none remain.',
+  'This handoff persists them before the next Epoch, including in closing mode; do not defer recording to the next Epoch or duplicate them in a Continuation.',
   CONTEXT_SWITCH_NOTE_GUIDANCE,
   'Record every completed reusable unit with advance_task_progress; if it produced exact cross-Context data, follow the register_artifact policy and reference that Artifact as produced.',
   'If the current SubStep is incomplete but has reusable progress in real workspace files, call record_continuation operation=save so the next Epoch can resume it.',

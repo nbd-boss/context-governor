@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import { CONTEXT_SWITCH_NOTE_GUIDANCE, CONTINUATION_RECOVERY_GUIDANCE, DECISION_CHECK_USAGE, DECISION_CHECKS, EXACT_DATA_TRANSFER_GUIDANCE, PRIOR_WORK_RETRIEVAL_POLICY } from '../src/agent-guidance.ts'
 import { buildResidentContext } from '../src/epoch/resident-context.ts'
+import { RESIDENT_STRUCTURE_DESCRIPTIONS, STRUCTURE_DESCRIPTIONS } from '../src/structure-description.ts'
 import { SessionWorkspaceProvider } from '../src/workspace/session-workspace.ts'
 import { initializeWorkspace, plannedSubState, plannedTaskPlan } from './test-fixtures.ts'
 
@@ -34,6 +35,15 @@ test('builds a serializable resident payload without DSH message or token depend
     assert.deepEqual(governor.decision_checks, DECISION_CHECKS)
     assert.equal(String(governor.instruction).split(DECISION_CHECK_USAGE).length, 2)
     const serialized = JSON.parse(resident!.text).context_governor
+    assert.deepEqual(serialized.structure_descriptions, RESIDENT_STRUCTURE_DESCRIPTIONS)
+    assert.match(serialized.structure_descriptions.state, /not independent evidence/)
+    assert.match(serialized.structure_descriptions.planned_action, /replaceable/)
+    assert.match(serialized.structure_descriptions.artifact, /not business truth/)
+    assert.equal('schema_version' in serialized.structure_descriptions, false)
+    assert.deepEqual(Object.keys(serialized).sort(), Object.keys(STRUCTURE_DESCRIPTIONS.context_payload.fields).sort())
+    assert.deepEqual(Object.keys(serialized.state).sort(), Object.keys(STRUCTURE_DESCRIPTIONS.state.fields).sort())
+    assert.equal('epoch_audit' in serialized.structure_descriptions, false)
+    assert.equal('transition_manifest' in serialized.structure_descriptions, false)
     assert.deepEqual(serialized.decision_checks, DECISION_CHECKS)
     assert.equal(serialized.exact_data_transfer_policy, EXACT_DATA_TRANSFER_GUIDANCE)
     assert.match(resident?.text ?? '', /call read_artifact/)
@@ -114,7 +124,7 @@ test('injects Continuation recovery guidance only for an active unfinished SubSt
     assert.ok(String(governor.instruction).includes(CONTINUATION_RECOVERY_GUIDANCE))
     assert.equal(String(governor.instruction).split(CONTINUATION_RECOVERY_GUIDANCE).length, 2)
     assert.match(resident?.text ?? '', /Filter excluded records and write the candidate list/)
-    assert.deepEqual(Object.keys(governor), ['instruction', 'session_id', 'state', 'current_sub_state', 'retrieval_policy', 'exact_data_transfer_policy', 'decision_checks'])
+    assert.deepEqual(Object.keys(governor), ['instruction', 'structure_descriptions', 'session_id', 'state', 'current_sub_state', 'retrieval_policy', 'exact_data_transfer_policy', 'decision_checks'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

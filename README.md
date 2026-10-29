@@ -173,6 +173,7 @@ node --require "$workspace\context-governor\scripts\tsx-userinfo-fallback.cjs" -
 
 | 文档 | 内容 |
 | --- | --- |
+| [结构与字段说明](src/structure-description.ts) | 数据语义的统一来源；常驻 Context 只引用精简视图 |
 | [持久化结构](docs/持久化结构.md) | State、SubState、Artifact 的职责与示例 |
 | [Planning](docs/Planning.md) | Step/SubStep 划分、覆盖关系与计划调整 |
 | [验证计划](docs/验证计划.md) | 固定测试集、验证指标、官方验收与 Context 抽查 |
