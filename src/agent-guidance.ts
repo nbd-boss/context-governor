@@ -24,10 +24,11 @@ export const DECISION_CHECKS = {
         'When missing or conflicting evidence leaves such an input ambiguous in a way that affects the result, resolve that ambiguity before adopting the input as a confirmed basis for execution or completion. Reuse already sufficient evidence without unnecessary re-querying.',
       ],
       evidence_quality: [
-        'Before promoting a conclusion to trusted State, a completion criterion, or a reusable result, distinguish what was requested or expected from what was actually observed, and identify any unverified inference between the observation and conclusion.',
+        'Before promoting a conclusion to trusted State, a completion criterion, or a reusable result, distinguish what was requested or expected from what was actually observed, and identify any unverified inference between the observation and conclusion. Requested bounds, container sizes, and declared limits do not establish the amount of actual content or complete source coverage.',
         'A successful check establishes only the tested scope and conditions, not completeness or capability under untested conditions.',
         'Saving or repeating a conclusion in a summary, Artifact, or criterion does not provide independent evidence for it.',
-        'When new direct evidence refutes a saved conclusion, identify the affected results and dependent work. Stop relying on that conclusion and use existing tools to correct the current handoff, any affected effective constraints, and dependent Agent-generated mutable working files before resuming dependent work. If correction remains unresolved, keep the affected claims explicitly unverified, record their impact in the handoff, and do not use them as trusted inputs; retain unaffected confirmed progress. Acknowledging the error only in the current conversation does not correct the saved recovery information.',
+        'When an observation conflicts with a saved conclusion, compare the original evidence and assumptions behind both before deciding which is wrong. Do not presume that the saved conclusion is correct or repair new data merely to fit it; keep the disputed claim unverified until the evidence resolves it.',
+        'When new direct evidence refutes a saved conclusion, identify the affected results and dependent work. Stop relying on that conclusion and use existing tools to correct the current handoff, any affected effective criteria and constraints, and dependent Agent-generated mutable working files before resuming dependent work. If correction remains unresolved, keep the affected claims explicitly unverified, record their impact in the handoff, and do not use them as trusted inputs; retain unaffected confirmed progress. Acknowledging the error only in the current conversation does not correct the saved recovery information.',
       ],
       identity_and_exclusion: [
         'Direct evidence must establish the required relationship or exclusion itself.',
@@ -40,7 +41,7 @@ export const DECISION_CHECKS = {
       ],
       known_constraints: [
         'Before retrying a path or resuming exploration, compare the proposed operation with relevant State.discovered_constraints according to their condition and required_behavior; do not repeat a ruled-out attempt under unchanged conditions.',
-        'Reconsider a restriction only when evidence shows that its condition no longer applies; a new Context Epoch alone is not such evidence.',
+        'Reconsider a restriction only when evidence shows that its condition no longer applies or direct evidence overturns the restriction. Identify the relevant changed condition or contradicting evidence before retrying a ruled-out path; a new Context Epoch alone is not such evidence.',
       ],
       recovery_effect: [
         'Select a recovery action only when its intended effect is explicitly supported by the available capability or direct evidence; do not assume undeclared side effects or treat an unverified recovery as successful. A substitute must achieve the required business effect, not merely produce similar-looking records or outputs.',
@@ -66,7 +67,7 @@ export const DECISION_CHECKS = {
       ],
       constraint_recording: [
         'When direct evidence confirms a runtime restriction that will govern later work, promptly call record_discovered_constraint with its condition, required_behavior, and source_events identifying the supporting original events before choosing another path or retrying. Mentioning a restriction in a reply, work note, Continuation, or switch_context.reason does not itself persist it in State.discovered_constraints.',
-        'Record only the evidenced scope of a restriction.',
+        'Record only the evidenced scope of a restriction: condition states when it applies, and required_behavior states only the behavior necessary because of that boundary. A failed operation does not rule out all related operations. Keep a chosen workaround or next method in Continuation.resume_from when a Continuation is applicable, not as a permanent restriction or the only permitted method. Explicit user-mandated methods remain user requirements.',
         'A single failed or timed-out request does not establish a permanent limitation or prove whether the operation completed.',
         STRUCTURE_DESCRIPTIONS.information_placement.role,
       ],
@@ -139,7 +140,7 @@ export const EXACT_DATA_TRANSFER_GUIDANCE = formatGuidance([
 /** One source for the result-first method shared by both planning levels. */
 export const PLANNING_CORE_GUIDANCE = formatGuidance([
   ...PARENT_OUTCOME_REQUIREMENTS,
-  'Derive acceptance criteria from authoritative task requirements. Do not promote a recommended execution method into a mandatory acceptance condition.',
+  'Derive acceptance criteria from authoritative task requirements. Do not promote a recommended execution method into a mandatory acceptance condition. Preserve required coverage even when its exact size is unknown; add concrete quantities or boundaries only when explicitly required or established by source evidence. Unknown size does not weaken a complete-coverage requirement, and that requirement is not met until evidence establishes coverage.',
   'Before planning children, normalize every parent completion criterion into one observable condition at this planning level. Split a criterion that combines distinct outputs, files, or conditions that different children would establish.',
   'Work result-first from the complete parent acceptance criteria: identify independently verifiable results, then give each result its conceptual inputs and one main unit of work.',
   'Multiple inputs belong together only when they jointly produce the same result and share one verification boundary.',
@@ -207,11 +208,11 @@ export const PRIOR_WORK_RETRIEVAL_POLICY = {
 
 /** One source for resuming an incomplete SubStep after an Epoch boundary. */
 export const CONTINUATION_RECOVERY_GUIDANCE = formatGuidance([
-  'A non-null current_sub_step.continuation is the active handoff for this Epoch: treat resume_from as the next work objective before ordinary recovery or re-planning.',
+  'A non-null current_sub_step.continuation is the active handoff for this Epoch: treat resume_from as the next work objective before ordinary recovery or re-planning. Resume in order: identify that objective and reusable progress, apply the known-constraint checks in context_governor.decision_checks.before_scope_or_external_change, then take the next safe action before exploring alternative routes. This is an internal action check, not a request for another report or tool call.',
   'Reuse evidence-backed continuation.progress; do not re-derive or revalidate it merely to regain confidence. Preserve stated uncertainty: a handoff does not make an incomplete or unverified result verified. If new evidence conflicts with a handoff conclusion, or a referenced working file conflicts with the handoff, apply the evidence-quality checks in context_governor.decision_checks.before_scope_or_external_change before resuming work that depends on the disputed conclusion.',
   'If resume_from requires external input, confirm that the needed input has actually been supplied before resuming affected work. A new message saying to continue or a new Context Epoch does not itself satisfy that prerequisite; otherwise preserve the unmet work and use record_continuation operation=wait_for_input again.',
   'Read a declared working_resource only when its exact contents are required to execute resume_from. Do not read unrelated Artifacts, History, or workspace files, and do not re-query external systems merely to re-establish facts already captured by the Continuation.',
-  'When the Continuation records an established execution boundary, use that boundary for the next safe operation and advance it after materializing the result. Re-investigate the boundary only after that operation fails, direct evidence contradicts it, or relevant conditions change. Do not repeat a recorded failed attempt under unchanged conditions; a failure rules out the attempted operation, not every untested variant.',
+  'When the Continuation records an established execution boundary, use that boundary for the next safe operation and advance it after materializing the result. If that operation fails or new evidence makes the saved method infeasible, adjust the method within the known boundaries and update the Continuation before handing off again; resume_from is not an immutable method. Reconsider a restriction through the shared known-constraint checks rather than restarting exploration merely because the Context changed.',
   'After resuming, return to normal bounded execution and use record_continuation for subsequent progress according to its saving rules. Do not repeat completed work merely because the Context changed, or switch Context merely because progress was saved.',
 ])
 
@@ -257,7 +258,7 @@ export const CONTEXT_CLOSING_GUIDANCE = formatGuidance([
 
 /** One authority for evidence-based acceptance-criteria revisions at either level. */
 export const CRITERIA_REPLAN_GUIDANCE = formatGuidance([
-  'Assess whether a criterion faithfully expresses the authoritative requirement separately from whether that requirement is currently achievable. Revise acceptance criteria only when authoritative evidence establishes that the original criterion misinterpreted the requirement or that the requirement has been explicitly changed. Before revising, compare the authoritative requirement, original criterion, and proposed criterion; identify the authoritative wording that justifies the change in required outcomes. source_events must support that corrected interpretation or authorized change, not merely describe an execution obstacle or a guessed evaluation expectation.',
+  'Assess whether a criterion faithfully expresses the authoritative requirement separately from whether that requirement is currently achievable. Revise acceptance criteria only when authoritative evidence establishes that the original criterion misinterpreted the requirement, encoded an unsupported factual assumption, or that the requirement has been explicitly changed. Before revising, compare the authoritative requirement, original criterion, and proposed criterion; identify the authoritative wording or direct source observation that justifies the correction or change. Direct source evidence may correct an Agent-inferred quantity or boundary without a changed user request, while preserving the required outcomes and complete scope. source_events must support that corrected interpretation or authorized change, not merely describe an execution obstacle or a guessed evaluation expectation.',
   'Execution failure, missing resources, or capability limits do not authorize reducing required scope or replacing a required result with an explanation of why it cannot be achieved. Infeasibility alone does not establish that the original criterion misinterpreted the requirement. If achieving a required result would violate another constraint under current conditions, leave the work unresolved rather than infer permission to waive either obligation. Evidence that a requirement cannot currently be met is not evidence that it may be waived.',
   'When an obstacle prevents a required result, retain that requirement as unmet, preserve confirmed progress and the unresolved cause in the existing handoff when applicable, and report the blocker rather than superseding the criterion to make the current result pass.',
   'For criteria involving reconstructed exact inputs, apply context_governor.exact_data_transfer_policy.',
